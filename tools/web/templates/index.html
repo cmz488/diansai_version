@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>OpenCV 调试面板</title>
+  <link rel="stylesheet" href="/static/css/debug.css" />
+</head>
+<body>
+
+<!-- ═══ Title Bar ═══ -->
+<header class="titlebar">
+  <div class="dots">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+  </div>
+  <span class="title">OpenCV 调试面板</span>
+  <span class="ip" id="hostIp"></span>
+</header>
+
+<!-- ═══ Main Layout ═══ -->
+<div class="main">
+
+  <!-- Sidebar (desktop) -->
+  <aside class="sidebar" id="sidebar">
+    <!-- Param list populated by params.js -->
+    <div id="paramList"></div>
+
+    <div class="sidebar-section">
+      <div class="label">布局</div>
+      <div class="content">
+        <div class="param-row">
+          <button id="btnGrid1">1×1</button>
+          <button id="btnGrid2" class="primary">1×2</button>
+          <button id="btnGrid4">2×2</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="label">工具</div>
+      <div class="content">
+        <div class="param-row"><button id="btnROI">📐 ROI 选区</button></div>
+        <div class="param-row"><button id="btnSnapshot">📸 快照</button></div>
+        <div class="param-row"><button id="btnRecord">⏺ 录屏</button></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Viewport -->
+  <main class="viewport">
+    <div class="grid cols2" id="streamGrid">
+      <!-- Populated by layout.js -->
+    </div>
+  </main>
+</div>
+
+<!-- ═══ Bottom Panels (desktop) ═══ -->
+<div class="panels">
+  <div class="panel-toggle">
+    <button id="btnChart">📊 图表</button>
+    <button id="btnLog">📋 日志</button>
+  </div>
+  <div class="panel-chart" id="panelChart">
+    <canvas id="chartCanvas"></canvas>
+  </div>
+  <div class="panel-log" id="panelLog">
+    <div id="logList"></div>
+  </div>
+</div>
+
+<!-- ═══ Status Bar ═══ -->
+<footer class="statusbar">
+  <div class="metric"><span class="rec-dot" id="recDot"></span></div>
+  <div class="metric">◆ FPS: <span class="val" id="metricFps">-</span></div>
+  <div class="metric">检测: <span class="val" id="metricDetect">-</span></div>
+  <div class="metric">耗时: <span class="val" id="metricLatency">-</span></div>
+</footer>
+
+<!-- ═══ Mobile Tab Bar ═══ -->
+<nav class="tabbar">
+  <button data-panel="view" class="active">
+    <span class="icon">📺</span> 视图
+  </button>
+  <button data-panel="params">
+    <span class="icon">🎚</span> 参数
+  </button>
+  <button data-panel="log">
+    <span class="icon">📋</span> 日志
+  </button>
+</nav>
+
+<!-- Mobile overlays -->
+<div class="mobile-panel" id="mobile-params">
+  <button class="close-btn">&times;</button>
+  <h3>参数调节</h3>
+  <div id="mobileParamList"></div>
+</div>
+<div class="mobile-panel" id="mobile-log">
+  <button class="close-btn">&times;</button>
+  <h3>日志</h3>
+  <div id="mobileLogList"></div>
+</div>
+
+<canvas class="roi-overlay" id="roiCanvas"></canvas>
+
+<script>
+  document.getElementById("hostIp").textContent = location.host;
+</script>
+<script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
