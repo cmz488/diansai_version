@@ -12,49 +12,10 @@
 import cv2
 import numpy as np
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Tuple
 
 
-# OpenCV 4.5.4 does not provide cv2.typing.MatLike.  Keep the runtime type
-# compatible with both the CPU representation and the transparent OpenCL
-# representation used by this module.
-MatLike = Union[np.ndarray, cv2.UMat]
-
-_OPENCL_INITIALIZED = False
-_OPENCL_ACTIVE = False
-
-
-def enable_opencl(verbose: bool = True) -> bool:
-    """Enable OpenCV's transparent OpenCL backend when an ICD is available.
-
-    UMat remains valid when OpenCL is unavailable; OpenCV transparently falls
-    back to its CPU implementation.  Returning the active state lets callers
-    expose that distinction instead of assuming that UMat always means GPU.
-    """
-    global _OPENCL_INITIALIZED, _OPENCL_ACTIVE
-
-    cv2.ocl.setUseOpenCL(True)
-    have_opencl = bool(cv2.ocl.haveOpenCL())
-    _OPENCL_ACTIVE = have_opencl and bool(cv2.ocl.useOpenCL())
-    _OPENCL_INITIALIZED = True
-
-    if verbose:
-        if _OPENCL_ACTIVE:
-            print("[OpenCL] enabled: UMat operations will use the OpenCL device")
-        else:
-            print(
-                "[OpenCL] unavailable: UMat is enabled but currently falls back "
-                "to CPU (no OpenCL ICD/device detected)"
-            )
-
-    return _OPENCL_ACTIVE
-
-
-def to_ndarray(image: MatLike) -> np.ndarray:
-    """Download a UMat once at an explicit CPU boundary."""
-    if isinstance(image, cv2.UMat):
-        return image.get()
-    return image
+MatLike = np.ndarray
 
 
 # ============================================================================
@@ -94,6 +55,7 @@ class FpsShow:
     def __init__(self) -> None:
         """初始化 FPS 计时器，记录当前时间为基准时间戳。"""
         self.last_ = time.time()
+        self.fps = 0.0
 
     def show(self, frame: MatLike) -> MatLike:
         """在给定帧上绘制 FPS 文字并返回。
@@ -112,14 +74,14 @@ class FpsShow:
             标注了 FPS 文字的同一帧对象（原地修改的引用）
         """
         current = time.time()
-        fps = 1 / (current - self.last_)
+        self.fps = 1 / (current - self.last_)
         self.last_ = current
         h = frame.shape[0]  # 图像高度（像素行数）
         w = frame.shape[1]  # 图像宽度（像素列数）
 
         frame = cv2.putText(
             frame,
-            "fps:{:.2f}".format(fps),  # 保留两位小数的帧率
+            "fps:{:.2f}".format(self.fps),  # 保留两位小数的帧率
             (int(w * 0.8), int(h * 0.2)),  # 标注位置：右下区域
             cv2.FONT_HERSHEY_PLAIN,  # 无衬线等宽字体
             3,  # 字体缩放因子
@@ -316,7 +278,7 @@ def detect_rect(
     tolerance: float = 0.1,
     epsilon: float = 0.02,
     reject_status: Dict = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0},
-) -> MatLike | None:
+) -> Optional[MatLike]:
     """从二值边缘图像中检测最佳矩形区域。
 
     此函数实现了一个多级筛选管道，逐步滤除不符合条件的轮廓：
@@ -402,7 +364,7 @@ def detect_rect(
     return best_rect
 
 
-def detect_laser_mask(off_frame: MatLike, on_frame: MatLike):
+def detect_laser_mask(off_frame, on_frame):
     # 开关帧需要两张都采集到后才能做差分。
     if off_frame is None or on_frame is None:
         return None
@@ -459,22 +421,17 @@ def detect_laser_mask(off_frame: MatLike, on_frame: MatLike):
 def preprocess(
     frame: MatLike,
     kernel: MatLike,
-    rect_lab_thresholds: Tuple[List, List],
-    canny_thresholds: Tuple[np.uint16, np.uint16] = [50, 150],
+    rect_lab_thresholds: Tuple[Sequence[int], Sequence[int]],
+    canny_thresholds: Tuple[int, int] = (50, 150),
 ) -> Tuple[MatLike, MatLike]:
-    # Initialize the transparent API once.  With a valid OpenCL ICD these
-    # pixel-wise operations stay on the GPU; otherwise UMat safely uses CPU.
-    if not _OPENCL_INITIALIZED:
-        enable_opencl()
-
-    # Upload exactly once.  Callers may pass a UMat directly (for example when
-    # resize also runs through OpenCL), in which case no additional upload is
-    # performed.
-    frame_u = frame if isinstance(frame, cv2.UMat) else cv2.UMat(frame)
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError("frame 必须是 HxWx3 BGR ndarray")
+    if kernel.ndim != 2:
+        raise ValueError("kernel 必须是二维 ndarray")
 
     # ---- 色彩空间转换（两条链共用，只做一次） ----
-    lab = cv2.cvtColor(frame_u, cv2.COLOR_BGR2LAB)  # BGR → CIELAB
-    gray = cv2.cvtColor(frame_u, cv2.COLOR_BGR2GRAY)  # BGR → 灰度
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)  # BGR → CIELAB
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)  # BGR → 灰度
 
     # 获取核尺寸：GaussianBlur 要求核宽高均为正奇数
     height, width = kernel.shape
@@ -490,14 +447,11 @@ def preprocess(
     rect_blurred = cv2.GaussianBlur(rect_binary, (width, height), 0)
 
     # 步骤 3: Canny 边缘检测
-    # low=high=canny_thresholds[0] — 使用单阈值，只保留强边缘
+
     rect_edges = cv2.Canny(rect_blurred, canny_thresholds[0], canny_thresholds[1])
 
     # 步骤 4: 形态学闭运算（先膨胀后腐蚀）
     # 目的：闭合 Canny 检测到的边缘断裂，形成连续轮廓
     rect_edges = cv2.morphologyEx(rect_edges, cv2.MORPH_CLOSE, kernel)
 
-    return (
-        to_ndarray(rect_edges),
-        to_ndarray(gray),
-    )
+    return rect_edges, gray

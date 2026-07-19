@@ -1,8 +1,6 @@
 import time
-import serial
-from tools.peripheral import LaserMask, Uart
-from tools.web import CameraManager
-import cv2
+
+from tools.peripheral import Uart
 
 if __name__ == "__main__":
     uart = Uart("/dev/tty2", baudrate=1500000)

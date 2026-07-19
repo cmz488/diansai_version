@@ -1,87 +1,88 @@
-# Orin NX OpenCV 视觉管线
+# Orin NX CSI/USB OpenCV 视觉识别
 
-默认数据流：
+项目默认使用 Jetson CSI 摄像头链路：
 
 ```text
-USB MJPEG camera
-  -> nvv4l2decoder (NVDEC)
+CSI sensor
+  -> nvarguscamerasrc (Argus + ISP)
   -> nvvidconv compute-hw=2 (VIC: flip/format conversion)
+  -> BGRx -> BGR appsink
   -> OpenCV BGR ndarray
   -> project detection
+```
+
+原有 USB MJPEG -> NVDEC -> VIC 链路仍可用，通过 `--source usb` 选择。
+硬件管线不可用时程序直接报错，不会静默切换到性能不同的软件路径。
+
+## 项目结构
+
+```text
+main.py                    应用入口：采集、矩形检测、Web 调试输出
+tools/hardware_pipeline.py CSI Argus/VIC 与 USB NVDEC/VIC 相机封装
+tools/tools.py             OpenCV 预处理和检测算法
+tools/web/                 参数调节与画面调试服务
+test_fps.py                固定采集链路的 FPS 测试
+benchmark_hardware.py      固定采集链路的延迟统计
 ```
 
 ## 运行
 
 ```bash
 cd /home/amov/Project
-
-# 默认优先 NVDEC+VIC，失败时回退 V4L2。
-python3 main.py
-
-# 仅测试视频流帧率。
-python3 test_fps.py --backend auto --frames 300
-
-# 测试所有可用的采集/计算组合并选择最高 FPS。
-python3 benchmark_hardware.py --frames 300 --warmup 30
+python3 main.py --source csi --sensor-id 0 --width 1280 --height 720 --fps 60
 ```
 
-常用参数：
+可选参数：
 
-```bash
-python3 main.py \
-  --device /dev/video0 \
-  --width 1280 --height 720 --fps 60 \
-  --capture-backend nvdec_vic \
-  --compute-backend cpu
+```text
+--flip-method 0..7   VIC 翻转方式，默认 6
+--sensor-mode N      Argus 传感器模式，默认 -1 自动选择
+--port 8080          Web 调试服务端口
+--no-web             不启动 Web 调试服务
+--max-frames N       处理 N 帧后退出，0 表示持续运行
 ```
 
-## OpenCV 交互接口
+## 最小采集接口
 
 ```python
-from tools.hardware_pipeline import OpenCVHardwarePipeline, PipelineConfig
+from tools.hardware_pipeline import JetsonCamera, PipelineConfig
 
-pipeline = OpenCVHardwarePipeline(
-    PipelineConfig(device="/dev/video0", width=1280, height=720, fps=60),
-    capture_backend="auto",
-    compute_backend="auto",  # 当前端到端实测选择 CPU 检测链
+camera = JetsonCamera(
+    PipelineConfig(source="csi", sensor_id=0, width=1280, height=720, fps=60)
 )
 
-with pipeline:
-    ok, frame = pipeline.read()  # frame 是普通 OpenCV BGR ndarray
+with camera:
+    ok, frame = camera.read()
+    # frame: H x W x 3 的 OpenCV BGR ndarray
 ```
 
-`OpenCVHardwarePipeline.preprocess()` 与原 `preprocess()` 返回相同的
-`(rect_edges, laser_binary, gray)`，业务代码不需要接触 GStreamer、VPI
-或 CUDA 对象。
+`JetsonCamera` 只负责把硬件处理后的画面交给 OpenCV；颜色阈值、边缘提取
+和目标识别仍由项目检测代码负责。
 
-## 后端说明
-
-- `nvdec_vic`：USB MJPEG 硬件解码 + VIC 翻转/转换，是本机端到端最优路径。
-- `v4l2`：CPU/驱动回退路径，接口相同。
-- `cpu`：OpenCV CPU 检测链；当前 60 FPS 相机的端到端结果略优，故为默认。
-- `vpi_cuda`：把 Gaussian/Canny/闭运算放到 VPI CUDA，并复用 VPI 缓冲区。
-  当前长测算法吞吐约 116 FPS，CPU 约 99 FPS；60 FPS 相机下端到端基本持平。
-- `umat`：只在 `cv2.ocl.useOpenCL() == True` 时允许。当前 Jetson
-  OpenCV 只有 OpenCL loader、没有 OpenCL 设备实现，UMat 会退化为 CPU，
-  因此默认不会把它标记成硬件加速。
-- PyCUDA 2022.2.2 已与系统 NumPy/OpenCV 兼容，基准脚本会执行真实 CUDA
-  kernel 自检；它不被强行塞入 LAB/轮廓管线，因为主机和 GPU 往返会降低
-  当前端到端 FPS。
-
-OpenCV appsink 最终仍有一次 NVMM 到 CPU BGR 的复制。若未来需要多路
-1080p/4K 完整零拷贝，应迁移到 C++ NvBufSurface/DeepStream，而不是在
-Python 中每帧下载到 ndarray。
-
-## 项目级 DNS 修复
-
-系统 `/etc/resolv.conf` 指向了不存在的
-`/run/systemd/resolve/stub-resolve.conf`。没有 root 权限时，可在私有
-mount namespace 中运行联网命令：
+使用 USB MJPEG 摄像头时：
 
 ```bash
-./run_with_dns.sh curl -I https://docs.nvidia.com
-./run_with_dns.sh pip3 install --user <package>
+python3 main.py --source usb --device /dev/video0 --width 1280 --height 720 --fps 60
 ```
 
-该脚本不修改系统全局文件。永久修复仍需管理员把 `/etc/resolv.conf`
-链接到 `/run/systemd/resolve/stub-resolv.conf`。
+## CSI 驱动检查
+
+Argus 能打开摄像头之前，系统必须先出现 `/dev/video*`。常用检查命令：
+
+```bash
+ls -l /dev/video*
+v4l2-ctl --list-devices
+gst-launch-1.0 nvarguscamerasrc sensor-id=0 num-buffers=30 \
+  ! 'video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1' \
+  ! nvvidconv ! fakesink
+```
+
+若没有 `/dev/video*`，应先修复传感器型号、CSI 接口对应的设备树 overlay、
+排线方向或接触问题；此时修改 OpenCV 参数无效。
+
+## 性能检查
+
+```bash
+python3 test_fps.py --source csi --frames 300 --warmup 30
+python3 benchmark_hardware.py --source csi --frames 300 --warmup 30
+```

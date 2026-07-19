@@ -5,7 +5,8 @@
 ## 快速开始
 
 ```python
-from tools.web import DebugServer, ParamRegistry, CameraManager
+from tools.hardware_pipeline import NvdecVicCamera, PipelineConfig
+from tools.web import DebugServer, ParamRegistry
 
 # 1. 注册可调参数
 params = ParamRegistry()
@@ -20,9 +21,10 @@ server.start()
 print("浏览器打开 http://<设备IP>:8080")
 
 # 3. 主循环
-cap = cv2.VideoCapture(0)
+camera = NvdecVicCamera(PipelineConfig(device="/dev/video0"))
+camera.open()
 while True:
-    ret, frame = cap.read()
+    ret, frame = camera.read()
 
     # 读取当前参数
     thresh = params.get("threshold")
@@ -75,14 +77,6 @@ while True:
 | `float` | 浮点数 | 滑块 | `range=(0.0, 1.0)`, `step=0.01` |
 | `bool` | 开关 | 复选框 | - |
 | `choice` | 下拉选择 | 下拉框 | `choices=["a", "b"]` |
-
-### CameraManager
-
-```python
-cam = CameraManager()
-cams = cam.detect()                          # 探测所有摄像头
-cap  = cam.open(0, width=1280, height=720)   # 打开并配置
-```
 
 ## 网页面板说明
 

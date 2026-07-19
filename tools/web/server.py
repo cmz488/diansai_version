@@ -9,7 +9,7 @@ import base64
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingTCPServer
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set
 
 from tools.web.streamer import StreamEngine
 from tools.web.log_buffer import LogBuffer
@@ -176,9 +176,6 @@ class _DebugHandler(BaseHTTPRequestHandler):
         if self.path == "/api/params":
             return self._json(ds.params.list_all())
 
-        if self.path == "/api/cameras":
-            return self._json(ds._camera_list_cache)
-
         if self.path == "/api/gallery":
             return self._json(ds.recorder.list_files())
 
@@ -204,11 +201,6 @@ class _DebugHandler(BaseHTTPRequestHandler):
             if ok:
                 ds._broadcast_params()
             self._json({"ok": ok, "params": ds.params.snapshot()})
-            return
-
-        if self.path == "/api/cameras/active":
-            idx = body.get("index")
-            self._json({"ok": False, "message": "Camera switching not in this version"})
             return
 
         if self.path == "/api/snapshot":
@@ -378,8 +370,6 @@ class DebugServer:
 
         self._ws_clients: Set[Any] = set()
         self._ws_lock = threading.Lock()
-
-        self._camera_list_cache: List[Dict] = []
 
         self._metrics_interval = 1.0
         self._metrics_last = 0.0

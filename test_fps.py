@@ -7,17 +7,15 @@ import statistics
 import time
 from typing import Optional, Sequence
 
-from tools.hardware_pipeline import (
-    CAPTURE_BACKENDS,
-    OpenCVHardwareCapture,
-    PipelineConfig,
-)
+from tools.hardware_pipeline import JetsonCamera, PipelineConfig
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", choices=("csi", "usb"), default="csi")
     parser.add_argument("--device", default="/dev/video0")
-    parser.add_argument("--backend", choices=CAPTURE_BACKENDS, default="auto")
+    parser.add_argument("--sensor-id", type=int, default=0)
+    parser.add_argument("--sensor-mode", type=int, default=-1)
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=int, default=60)
@@ -32,20 +30,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.frames <= 0 or args.warmup < 0:
         raise ValueError("frames 必须 > 0，warmup 必须 >= 0")
 
-    capture = OpenCVHardwareCapture(
+    capture = JetsonCamera(
         PipelineConfig(
+            source=args.source,
             device=args.device,
+            sensor_id=args.sensor_id,
+            sensor_mode=args.sensor_mode,
             width=args.width,
             height=args.height,
             fps=args.fps,
             flip_method=args.flip_method,
         ),
-        backend=args.backend,
     )
     if not capture.open():
         raise RuntimeError(f"无法打开视频流：{capture.last_error}")
 
-    active_backend = capture.active_backend
     try:
         for _ in range(args.warmup):
             ok, _ = capture.read()
@@ -73,7 +72,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     ordered = sorted(latencies)
     p95 = ordered[min(int(len(ordered) * 0.95), len(ordered) - 1)]
-    print(f"backend: {active_backend}")
+    print(f"pipeline: {'argus_vic' if args.source == 'csi' else 'nvdec_vic'}")
     print(f"frames: {valid_frames}")
     print(f"elapsed: {elapsed:.3f} s")
     print(f"fps: {valid_frames / elapsed:.3f}")
