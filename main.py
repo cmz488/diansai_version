@@ -1,195 +1,122 @@
-"""Hardware-accelerated camera capture and OpenCV target detection."""
-
-from __future__ import annotations
-
-import argparse
-import time
-from typing import Optional, Sequence
+"""相机捕获 + 矩形追踪 + 激光点追踪 — Web 推流版。"""
 
 import cv2
 import numpy as np
 
 from tools.hardware_pipeline import JetsonCamera, PipelineConfig
 from tools.tools import (
+    DrawGraph,
     FpsShow,
+    LaserSpotDetector,
+    RectTracker,
     cvt_mvlab2cv,
-    detect_rect,
     preprocess,
 )
-from tools.web import DebugServer, ParamRegistry
+from tools.web import DebugServer
 
+# ============================================================================
+# 参数
+# ============================================================================
 
 REAL_ASPECT_RATIO = 0.657
 ASPECT_TOLERANCE = 0.4
+DEFAULT_LAB_THRESHOLDS = [41, 74, -14, 13, -27, 31]
 
+MIN_AREA = 2000
+MIN_WHITE = 60
+KERNEL_SIZE = 5
 
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", choices=("csi", "usb"), default="csi")
-    parser.add_argument("--device", default="/dev/video0", help="USB 模式的视频节点")
-    parser.add_argument("--sensor-id", type=int, default=0, help="CSI/Argus 传感器编号")
-    parser.add_argument("--sensor-mode", type=int, default=-1, help="-1 表示自动选择")
-    parser.add_argument("--width", type=int, default=1280)
-    parser.add_argument("--height", type=int, default=720)
-    parser.add_argument("--fps", type=int, default=60)
-    parser.add_argument("--flip-method", type=int, default=6, choices=range(8))
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--no-web", action="store_true")
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="0 表示持续运行；正数用于测试后自动退出",
+# ============================================================================
+# 初始化
+# ============================================================================
+
+config = PipelineConfig(
+    source="usb",
+    device="/dev/video0",
+    width=640,
+    height=480,
+    fps=60,
+    flip_method=6,
+)
+camera = JetsonCamera(config)
+camera.open()
+
+fps = FpsShow()
+rect_tracker = RectTracker(track_radius=250, smooth_alpha=0.6)
+laser_detector = LaserSpotDetector(
+    track_radius=120,
+    smooth_alpha=0.65,
+    full_search_interval=30,
+    min_area=10,
+)
+
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (KERNEL_SIZE, KERNEL_SIZE))
+rect_lab_lower, rect_lab_upper = cvt_mvlab2cv(DEFAULT_LAB_THRESHOLDS)
+
+server = DebugServer(port=8080)
+server.start()
+
+# ============================================================================
+# 主循环
+# ============================================================================
+
+while True:
+    ok, frame = camera.read()
+    if not ok or frame is None:
+        continue
+
+    rect_edges, gray = preprocess(frame, kernel, (rect_lab_lower, rect_lab_upper))
+
+    # ── 矩形追踪 ──
+    reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
+    best_rect = rect_tracker.track(
+        rect_edges,
+        gray,
+        MIN_AREA,
+        MIN_WHITE,
+        REAL_ASPECT_RATIO,
+        tolerance=ASPECT_TOLERANCE,
+        reject_status=reject_status,
     )
-    return parser.parse_args(argv)
 
+    graph = None
+    if best_rect is not None:
+        w_top = np.linalg.norm(best_rect[1] - best_rect[0])
+        w_bot = np.linalg.norm(best_rect[2] - best_rect[3])
+        h_left = np.linalg.norm(best_rect[3] - best_rect[0])
+        h_right = np.linalg.norm(best_rect[2] - best_rect[1])
+        plane_w = max(int((w_top + w_bot) / 2), 1)
+        plane_h = max(int((h_left + h_right) / 2), 1)
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
-    args = parse_args(argv)
-    config = PipelineConfig(
-        source=args.source,
-        device=args.device,
-        sensor_id=args.sensor_id,
-        sensor_mode=args.sensor_mode,
-        width=args.width,
-        height=args.height,
-        fps=args.fps,
-        flip_method=args.flip_method,
-    )
-    camera = JetsonCamera(config)
-    if not camera.open():
-        raise RuntimeError(f"无法打开视频流：{camera.last_error}")
+        graph = DrawGraph(best_rect.astype(np.float32), plane_w, plane_h)
+        graph.draw_border(frame)
+        graph.draw_corners(frame)
+        center_xy = best_rect.mean(axis=0)
 
-    print(
-        f"[pipeline] {config.source} -> VIC -> OpenCV BGR, "
-        f"size={config.width}x{config.height}@{config.fps}, "
-        f"sensor-id={config.sensor_id}" if config.source == "csi" else
-        f"[pipeline] usb -> NVDEC/VIC -> OpenCV BGR, device={config.device}, "
-        f"size={config.width}x{config.height}@{config.fps}"
-    )
+        print(f"rect:{center_xy[0]},{center_xy[1]}")
 
-    params = ParamRegistry()
-    params.add("kernel", type=int, default=5, range=(1, 21), step=2, group="形态学")
-    params.add("min_area", type=int, default=2000, range=(100, 20000), group="筛选")
-    params.add("min_white", type=int, default=60, range=(0, 255), group="筛选")
+    # ── 激光点追踪 ──
+    spot = laser_detector.detect(frame)
+    if spot is not None:
+        if graph is not None:
+            laser_pt = np.array([[spot.x, spot.y]], dtype=np.float32)
+            plane_pt = graph.map_from_image(laser_pt)[0]
+            u = plane_pt[0] / (graph.plane_w - 1)
+            v = plane_pt[1] / (graph.plane_h - 1)
+            if 0 <= u <= 1 and 0 <= v <= 1:
+                graph.draw_point(frame, u, v)
+                graph.draw_cross(frame, u, v)
+        else:
+            ix, iy = int(spot.x), int(spot.y)
+            cv2.drawMarker(frame, (ix, iy), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
+            cv2.circle(frame, (ix, iy), 8, (0, 255, 0), 1)
 
-    server: Optional[DebugServer] = None
-    if not args.no_web:
-        server = DebugServer(params=params, port=args.port)
-        server.start()
+    # ── 推流 ──
+    print(f"lm:{ix},{iy}")
+    fps.show(frame)
+    server.update_frame(0, frame)
+    server.update_frame(1, cv2.cvtColor(rect_edges, cv2.COLOR_GRAY2BGR))
 
-    fps = FpsShow()
-    rect_lab_lower, rect_lab_upper = cvt_mvlab2cv([41, 74, -14, 13, -27, 31])
-
-    kernel_size = -1
-    kernel = np.ones((5, 5), dtype=np.uint8)
-    consecutive_read_failures = 0
-    processed_frames = 0
-
-    try:
-        while True:
-            ok, frame = camera.read()
-            if not ok or frame is None:
-                consecutive_read_failures += 1
-                if consecutive_read_failures >= 30:
-                    raise RuntimeError("连续 30 帧读取失败，视频流可能已断开")
-                time.sleep(0.005)
-                continue
-            consecutive_read_failures = 0
-            raw_frame = frame.copy()
-            requested_kernel = int(params.get("kernel"))
-            if requested_kernel != kernel_size:
-                if requested_kernel % 2 == 0:
-                    requested_kernel += 1
-                kernel_size = requested_kernel
-                kernel = cv2.getStructuringElement(
-                    cv2.MORPH_RECT,
-                    (kernel_size, kernel_size),
-                )
-
-            min_area = int(params.get("min_area"))
-            min_white = int(params.get("min_white"))
-            rect_edges, gray = preprocess(
-                frame,
-                kernel,
-                (rect_lab_lower, rect_lab_upper),
-            )
-
-            reject_status = {
-                "area": 0,
-                "quad": 0,
-                "white_region": 0,
-                "aspect_ratio": 0,
-            }
-            best_rect = detect_rect(
-                rect_edges,
-                gray,
-                min_area,
-                min_white,
-                REAL_ASPECT_RATIO,
-                tolerance=ASPECT_TOLERANCE,
-                reject_status=reject_status,
-            )
-
-
-            rect_center_x: Optional[int] = None
-            rect_center_y: Optional[int] = None
-            if best_rect is not None:
-                rect_center_x = int(best_rect[:, 0].mean())
-                rect_center_y = int(best_rect[:, 1].mean())
-                cv2.polylines(frame, [best_rect], True, (0, 255, 0), 2)
-                cv2.circle(
-                    frame,
-                    (rect_center_x, rect_center_y),
-                    5,
-                    (0, 255, 0),
-                    -1,
-                )
-
-            if rect_center_x is not None and rect_center_y is not None:
-                cv2.putText(
-                    frame,
-                    f"rect:({rect_center_x},{rect_center_y})",
-                    (10, frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2,
-                )
-            fps.show(frame)
-            cv2.putText(
-                frame,
-                f"area:{reject_status['area']} "
-                f"asp:{reject_status['aspect_ratio']} "
-                f"quad:{reject_status['quad']} "
-                f"white:{reject_status['white_region']}",
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (0, 255, 0),
-                2,
-            )
-
-            if server is not None:
-                server.metrics.update(
-                    fps=round(fps.fps, 2),
-                    capture_path="argus_vic" if config.source == "csi" else "nvdec_vic",
-                )
-                server.broadcast_metrics()
-                server.update_frame(0, frame)
-                server.update_frame(1, rect_edges)
-
-            processed_frames += 1
-            if args.max_frames > 0 and processed_frames >= args.max_frames:
-                break
-    except KeyboardInterrupt:
-        print("\n[main] 收到退出信号")
-    finally:
-        camera.release()
-        if server is not None:
-            server.stop()
-        cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    main()
+camera.release()
+server.stop()
+cv2.destroyAllWindows()

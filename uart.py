@@ -1,10 +1,19 @@
 import time
-
+import cv2
+import numpy as np
 from tools.peripheral import Uart
+from tools.hardware_pipeline import PipelineConfig, JetsonCamera
 
 if __name__ == "__main__":
-    uart = Uart("/dev/tty2", baudrate=1500000)
-    while True:
-        uart.send(bytearray("hello", "utf-8"))
-        print("开始发送")
-        time.sleep(1)
+    config = PipelineConfig(
+        source="usb",
+        device="/dev/video0",
+        width=640,
+        height=480,
+        fps=60,
+        flip_method=6,
+    )
+    camera = JetsonCamera(config)
+    camera.open()
+    ret, frame = camera.read()
+    cv2.imwrite("1.jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 100])

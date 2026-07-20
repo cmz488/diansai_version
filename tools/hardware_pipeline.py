@@ -57,8 +57,7 @@ def build_nvdec_vic_pipeline(config: PipelineConfig) -> str:
     config.validate()
     return (
         f"v4l2src device={config.device} io-mode={config.io_mode} ! "
-        f"image/jpeg,width={config.width},height={config.height},"
-        f"framerate={config.fps}/1 ! "
+        f"image/jpeg,width={config.width},height={config.height} ! "
         "jpegparse ! "
         "nvv4l2decoder mjpeg=true enable-max-performance=true disable-dpb=true ! "
         f"nvvidconv compute-hw=2 flip-method={config.flip_method} ! "
