@@ -13,10 +13,10 @@ class Uart:
         self.ser = serial.Serial(port=port, baudrate=baudrate)
 
     def send(self, data: bytearray):
-        self.ser.write(FRAME_HEAD + data + FRAME_TAIL)
+        return self.ser.write(FRAME_HEAD + data + FRAME_TAIL)
 
-    def read(self) -> List:
-        return list(self.ser.read(self.ser.in_waiting))
+    def read(self, size) -> List:
+        return list(self.ser.read(size))
 
 
 class LaserMask:

@@ -20,10 +20,10 @@ from tools.web import DebugServer
 
 REAL_ASPECT_RATIO = 0.657
 ASPECT_TOLERANCE = 0.4
-DEFAULT_LAB_THRESHOLDS = [41, 74, -14, 13, -27, 31]
+DEFAULT_LAB_THRESHOLDS = [12, 100, -53, 7, -38, 31]
 
 MIN_AREA = 2000
-MIN_WHITE = 60
+MIN_WHITE = 10
 KERNEL_SIZE = 5
 
 # ============================================================================
@@ -35,11 +35,12 @@ config = PipelineConfig(
     device="/dev/video0",
     width=640,
     height=480,
-    fps=60,
+    fps=120,
     flip_method=6,
 )
 camera = JetsonCamera(config)
-camera.open()
+if not camera.open():
+    raise RuntimeError(f"无法打开相机：{camera.last_error}")
 
 fps = FpsShow()
 rect_tracker = RectTracker(track_radius=250, smooth_alpha=0.6)
@@ -47,7 +48,16 @@ laser_detector = LaserSpotDetector(
     track_radius=120,
     smooth_alpha=0.65,
     full_search_interval=30,
-    min_area=10,
+    min_area=5,
+    max_area=1000,
+    morph_kernel_size=3,
+    roi_margin=4,
+    max_aspect_ratio=3.0,
+    min_confidence=0.25,
+    color_mode="blue",
+    min_color_excess=40,
+    min_color_value=80,
+    threshold=[99, 100, -32, 28, -38, 26],
 )
 
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (KERNEL_SIZE, KERNEL_SIZE))
@@ -60,10 +70,17 @@ server.start()
 # 主循环
 # ============================================================================
 
+consecutive_read_failures = 0
+camera_error = None
 while True:
     ok, frame = camera.read()
     if not ok or frame is None:
+        consecutive_read_failures += 1
+        if consecutive_read_failures >= 30:
+            camera_error = "相机连续读取失败 30 次"
+            break
         continue
+    consecutive_read_failures = 0
 
     rect_edges, gray = preprocess(frame, kernel, (rect_lab_lower, rect_lab_upper))
 
@@ -89,34 +106,43 @@ while True:
         plane_h = max(int((h_left + h_right) / 2), 1)
 
         graph = DrawGraph(best_rect.astype(np.float32), plane_w, plane_h)
-        graph.draw_border(frame)
-        graph.draw_corners(frame)
-        center_xy = best_rect.mean(axis=0)
-
-        print(f"rect:{center_xy[0]},{center_xy[1]}")
 
     # ── 激光点追踪 ──
-    spot = laser_detector.detect(frame)
+    spot = (
+        laser_detector.detect(frame, search_polygon=best_rect)
+        if best_rect is not None
+        else None
+    )
+    if graph is not None:
+        graph.draw_border(frame)
+        graph.draw_corners(frame)
+
     if spot is not None:
         if graph is not None:
             laser_pt = np.array([[spot.x, spot.y]], dtype=np.float32)
             plane_pt = graph.map_from_image(laser_pt)[0]
-            u = plane_pt[0] / (graph.plane_w - 1)
-            v = plane_pt[1] / (graph.plane_h - 1)
+            u = plane_pt[0] / max(graph.plane_w - 1, 1)
+            v = plane_pt[1] / max(graph.plane_h - 1, 1)
             if 0 <= u <= 1 and 0 <= v <= 1:
                 graph.draw_point(frame, u, v)
                 graph.draw_cross(frame, u, v)
-        else:
-            ix, iy = int(spot.x), int(spot.y)
-            cv2.drawMarker(frame, (ix, iy), (0, 255, 0), cv2.MARKER_CROSS, 20, 2)
-            cv2.circle(frame, (ix, iy), 8, (0, 255, 0), 1)
+                graph.draw_label(frame, u, v, f"conf:{spot.confidence:.2f}")
+
+    cv2.putText(
+        frame,
+        f"area:{reject_status['area']},quad:{reject_status['quad']},aspect_ratio:{reject_status['aspect_ratio']},hite_region:{reject_status['white_region']}",
+        (50, 50),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 0),
+    )
 
     # ── 推流 ──
-    print(f"lm:{ix},{iy}")
     fps.show(frame)
     server.update_frame(0, frame)
-    server.update_frame(1, cv2.cvtColor(rect_edges, cv2.COLOR_GRAY2BGR))
-
+    server.update_frame(1, rect_edges)
 camera.release()
 server.stop()
 cv2.destroyAllWindows()
+if camera_error is not None:
+    raise RuntimeError(camera_error)

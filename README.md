@@ -59,6 +59,36 @@ with camera:
 `JetsonCamera` 只负责把硬件处理后的画面交给 OpenCV；颜色阈值、边缘提取
 和目标识别仍由项目检测代码负责。
 
+## 单帧激光点检测
+
+主程序使用单帧 LAB 掩码检测，不依赖激光开关或开/关帧差。当前处理链为：
+
+```text
+BGR -> LAB 阈值 -> 目标矩形内部掩码 -> 3x3 开运算
+    -> 连通域面积/形状过滤 -> 局部对比度与蓝色光晕评分
+    -> 亮度加权质心 -> ROI 追踪和平滑
+```
+
+激光检测只在已经识别出的目标矩形内部运行。`LaserSpotDetector` 的关键参数：
+
+```text
+threshold             Machine Vision LAB 六元组
+min_area/max_area     激光连通域像素面积范围
+morph_kernel_size     形态学核，0/1 表示关闭，默认 3
+roi_margin            从目标矩形边缘向内排除的像素宽度
+max_aspect_ratio      候选连通域最大长宽比
+min_confidence        局部对比度、SNR、颜色和形状的最低综合分数
+color_mode            blue、red 或 any
+min_color_excess      主颜色相对其他通道的最小差值
+min_color_value       主颜色通道的最低亮度
+```
+
+运行激光检测回归测试：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
 使用 USB MJPEG 摄像头时：
 
 ```bash

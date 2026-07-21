@@ -2,7 +2,6 @@
 
 from ._colors import cvt_mvlab2cv
 
-from dataclasses import dataclass
 from typing import NamedTuple, Optional, Tuple
 
 import cv2
@@ -12,7 +11,7 @@ MatLike = np.ndarray
 
 
 class LaserSpot(NamedTuple):
-    """帧差法检测到的激光点结果。"""
+    """激光点检测结果。"""
 
     x: float
     y: float
@@ -29,8 +28,13 @@ def detect_laser_mask(off_frame, on_frame, snr_threshold=8.0):
     if off_frame.shape != on_frame.shape:
         return None
 
+    if off_frame.ndim not in (2, 3):
+        raise ValueError("off_frame/on_frame 必须是灰度或 BGR 图像")
     delta = on_frame.astype(np.int16) - off_frame.astype(np.int16)
-    score = np.maximum(delta, 0).max(axis=2).astype(np.float32)
+    positive = np.maximum(delta, 0)
+    score = (
+        positive.max(axis=2) if positive.ndim == 3 else positive
+    ).astype(np.float32)
     score = cv2.GaussianBlur(score, (3, 3), 0)
 
     _, peak_value, _, peak_location = cv2.minMaxLoc(score)
@@ -71,14 +75,10 @@ def detect_laser_by_mask(lab_frame, gray_frame, min_area):
     # 生成掩码
     mask = cv2.inRange(lab_frame, ls, us)
 
-    kernel = np.ones((5, 5), np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    red_laser = cv2.bitwise_and(gray_frame, gray_frame, mask=mask)
-
-    edge = cv2.Canny(red_laser, 50, 150)
-    contours, _ = cv2.findContours(edge, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         best_laser = max(contours, key=cv2.contourArea)
         if cv2.contourArea(best_laser) < min_area:
@@ -97,17 +97,24 @@ def detect_laser_binary(
     c_val: int = 6,
 ) -> Optional[Tuple[float, float, float, MatLike]]:
     """使用 LAB 色彩空间二值化检测激光点（单帧，无需 off/on 切换）。"""
-    h, w = frame.shape[:2]
+    if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError("frame 必须是 H×W×3 的 BGR 图像")
+    if (lab_lower is None) != (lab_upper is None):
+        raise ValueError("lab_lower 和 lab_upper 必须同时提供")
+    if morph_kernel_size < 0 or (
+        morph_kernel_size > 1 and morph_kernel_size % 2 == 0
+    ):
+        raise ValueError("morph_kernel_size 必须为 0、1 或大于 1 的奇数")
+    if block_size < 3:
+        raise ValueError("block_size 必须 >= 3")
 
     if lab_lower is not None and lab_upper is not None:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         mask = cv2.inRange(lab, lab_lower, lab_upper)
     elif auto_thresh is not None:
         if auto_thresh._lower is None:
-            try:
-                auto_thresh.learn_from_peaks(frame, top_n=30, half_size=4)
-            except RuntimeError:
-                return None
+            # 全图最亮点可能是灯光或白纸，禁止在检测过程中隐式学习。
+            return None
         lower, upper = auto_thresh.thresholds
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         mask = cv2.inRange(lab, lower, upper)
@@ -130,31 +137,36 @@ def detect_laser_binary(
             c_val,
         )
 
-    if morph_open:
+    if morph_open and morph_kernel_size > 1:
         kern = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (morph_kernel_size, morph_kernel_size)
         )
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kern)
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    candidates = []
+    for label in range(1, count):
+        x, y, width, height, area = stats[label]
+        if area < 2 or area > 1000:
+            continue
+        aspect = max(width, height) / max(min(width, height), 1)
+        if aspect > 3.0:
+            continue
+        component = labels == label
+        peak = float(lab[:, :, 0][component].max())
+        fill = float(area) / max(float(width * height), 1.0)
+        candidates.append((peak + 32.0 * fill, label, peak))
+
+    if not candidates:
         return None
 
-    largest = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(largest) < 2:
-        return None
-
-    M = cv2.moments(largest)
-    if M["m00"] <= 0:
-        return None
-
-    cx = float(M["m10"] / M["m00"])
-    cy = float(M["m01"] / M["m00"])
-
-    if np.any(mask > 0):
-        l_peak = float(lab[:, :, 0][mask > 0].max())
-    else:
-        l_peak = 0.0
+    _, selected_label, l_peak = max(candidates)
+    selected = labels == selected_label
+    ys, xs = np.nonzero(selected)
+    weights = np.maximum(lab[:, :, 0][selected].astype(np.float32), 1.0)
+    weight_sum = float(weights.sum())
+    cx = float(np.dot(xs, weights) / weight_sum)
+    cy = float(np.dot(ys, weights) / weight_sum)
     confidence = min(l_peak / 200.0, 1.0)
 
     return cx, cy, confidence, mask
