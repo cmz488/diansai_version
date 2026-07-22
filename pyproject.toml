@@ -3,11 +3,11 @@ name = "tspfile"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = []
+requires-python = ">=3.10"
+dependencies = [
+    "opencv-python>=5.0.0.93",
+]
 [tool.pyright]
-venvPath = "./cv_venv/"
-venv = "cv_venv"
 typeCheckingMode = "basic"
 reportCallIssue = false
 reportArgumentType = false
