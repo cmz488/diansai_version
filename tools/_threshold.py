@@ -225,9 +225,7 @@ def approx_threshold_v2(
     )
 
     if bin_count >= 5 and smooth_k >= 3:
-        hist_smooth = cv2.GaussianBlur(
-            hist.reshape(-1, 1), (1, smooth_k), 0
-        ).ravel()
+        hist_smooth = cv2.GaussianBlur(hist.reshape(-1, 1), (1, smooth_k), 0).ravel()
     else:
         hist_smooth = hist
 
@@ -253,9 +251,11 @@ def approx_threshold_v2(
         if hist_smooth[left_bin] < valley_threshold:
             break
         # 如果下降后又上升 → 到了另一个峰的谷底
-        if (left_bin < main_idx - 2
-                and hist_smooth[left_bin] > hist_smooth[left_bin - 1]
-                and hist_smooth[left_bin - 1] < hist_smooth[left_bin - 2]):
+        if (
+            left_bin < main_idx - 2
+            and hist_smooth[left_bin] > hist_smooth[left_bin - 1]
+            and hist_smooth[left_bin - 1] < hist_smooth[left_bin - 2]
+        ):
             break
         left_bin -= 1
 
@@ -264,9 +264,11 @@ def approx_threshold_v2(
     while right_bin < bin_count - 1:
         if hist_smooth[right_bin] < valley_threshold:
             break
-        if (right_bin > main_idx + 2
-                and hist_smooth[right_bin] > hist_smooth[right_bin + 1]
-                and hist_smooth[right_bin + 1] < hist_smooth[right_bin + 2]):
+        if (
+            right_bin > main_idx + 2
+            and hist_smooth[right_bin] > hist_smooth[right_bin + 1]
+            and hist_smooth[right_bin + 1] < hist_smooth[right_bin + 2]
+        ):
             break
         right_bin += 1
 
