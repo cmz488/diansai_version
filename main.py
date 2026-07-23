@@ -31,18 +31,17 @@ KERNEL_SIZE = 5
 # 初始化
 # ============================================================================
 
-# config = PipelineConfig(
-#     source="usb",
-#     device="/dev/video0",
-#     width=640,
-#     height=480,
-#     fps=120,
-#     flip_method=6,
-# )
-# camera = JetsonCamera(config)
-# if not camera.open():
-#     raise RuntimeError(f"无法打开相机：{camera.last_error}")
-cap = cv2.VideoCapture(1)
+config = PipelineConfig(
+    source="usb",
+    device="/dev/video0",
+    width=640,
+    height=480,
+    fps=120,
+    flip_method=6,
+)
+camera = JetsonCamera(config)
+if not camera.open():
+    raise RuntimeError(f"无法打开相机：{camera.last_error}")
 fps = FpsShow()
 binarizer = Binarizer(strategy="range")
 rect_tracker = RectTracker(track_radius=250, smooth_alpha=0.6)
@@ -75,7 +74,7 @@ best_rect = None
 consecutive_read_failures = 0
 camera_error = None
 while True:
-    ok, frame = cap.read()
+    ok, frame = camera.read()
     if not ok or frame is None:
         consecutive_read_failures += 1
         if consecutive_read_failures >= 30:
@@ -157,7 +156,7 @@ while True:
     server.update_frame(0, frame)
 
     server.update_frame(1, rect_edges)
-#camera.release()
+camera.release()
 server.stop()
 cv2.destroyAllWindows()
 if camera_error is not None:
