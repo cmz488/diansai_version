@@ -261,7 +261,7 @@ def approx_threshold_v2(
 
     # 向右找谷底
     right_bin = main_idx
-    while right_bin < bin_count - 1:
+    while right_bin < bin_count - 2:
         if hist_smooth[right_bin] < valley_threshold:
             break
         if (
@@ -525,8 +525,8 @@ class Binarizer:
             info["morph_kernel"] = self.morph_kernel
             info["gauss_kernel"] = self.gauss_kernel
         else:
-            info["lower"] = self._lower.tolist() if self._lower is not None else None
-            info["upper"] = self._upper.tolist() if self._upper is not None else None
+            info["lower"] = self._lower if self._lower is not None else None
+            info["upper"] = self._upper if self._upper is not None else None
             info["quality"] = self._quality
         return info
 

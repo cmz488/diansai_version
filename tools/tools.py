@@ -7,6 +7,7 @@
     _threshold    — Binarizer, AutoThresholder (@deprecated)
     _rect_detect  — _process_contour_chunk, detect_rect
     _laser_detect — LaserSpot, detect_laser_mask, detect_laser_binary
+    _camshift     — CamShiftTracker
     _tracking     — FpsShow, LaserSpotDetector, RectTracker
     _preprocess   — preprocess
 
@@ -19,6 +20,7 @@ from tools._drawing import DrawGraph
 from tools._threshold import AutoThresholder, Binarizer
 from tools._rect_detect import _process_contour_chunk, detect_rect
 from tools._laser_detect import LaserSpot, detect_laser_binary, detect_laser_mask
+from tools._camshift import CamShiftTracker
 from tools._tracking import FpsShow, LaserSpotDetector, RectTracker
 from tools._preprocess import preprocess
 
@@ -42,6 +44,8 @@ __all__ = [
     "LaserSpot",
     "detect_laser_binary",
     "detect_laser_mask",
+    # _camshift
+    "CamShiftTracker",
     # _tracking
     "FpsShow",
     "LaserSpotDetector",

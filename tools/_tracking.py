@@ -474,13 +474,13 @@ class LaserSpotDetector:
 
 
 class RectTracker:
-    """矩形 ROI 追踪器 — ROI 加速 + 中心平滑 + 定时全图回退。"""
+    """矩形 ROI 追踪器 — 纯几何方法 + 中心平滑 + 定时全图回退。"""
 
     def __init__(
         self,
-        track_radius: int = 250,
+        track_radius: int = 400,
         smooth_alpha: float = 0.6,
-        full_search_interval: int = 30,
+        full_search_interval: int = 10,
     ) -> None:
         if not 0.0 < smooth_alpha <= 1.0:
             raise ValueError("smooth_alpha 必须在 (0, 1] 范围内")
@@ -505,7 +505,12 @@ class RectTracker:
         tolerance: float = 0.1,
         epsilon: float = 0.02,
         reject_status: Optional[Dict] = None,
+        search_bbox: Optional[Tuple[int, int, int, int]] = None,
     ) -> Optional[MatLike]:
+        """追踪矩形，返回 4 角点或 None。
+
+        search_bbox: 可选的外部搜索提示 (x1, y1, x2, y2)，用于限制搜索范围。
+        """
         if reject_status is None:
             reject_status = {
                 "area": 0,
@@ -516,71 +521,53 @@ class RectTracker:
 
         self._frame_count += 1
 
-        use_tracking = self._last_center is not None and (
-            self.full_search_interval <= 0
-            or self._frame_count % self.full_search_interval != 0
+        is_full_search = (
+            self.full_search_interval > 0
+            and self._frame_count % self.full_search_interval == 0
         )
 
-        if use_tracking:
-            best_rect = self._track_roi(
-                edges,
-                gray,
-                min_area,
-                white_area,
-                real_aspect_ratio,
-                target_width=target_width,
-                tolerance=tolerance,
-                epsilon=epsilon,
-                reject_status=reject_status,
+        # ── 1. 外部 search_bbox 优先 ──
+        if not is_full_search and search_bbox is not None:
+            best_rect = self._detect_in_bbox(
+                edges, gray, search_bbox,
+                min_area, white_area, real_aspect_ratio,
+                target_width=target_width, tolerance=tolerance,
+                epsilon=epsilon, reject_status=reject_status,
             )
-            if best_rect is None:
-                self._misses += 1
-                best_rect = detect_rect(
-                    edges,
-                    gray,
-                    min_area,
-                    white_area,
-                    real_aspect_ratio,
-                    target_width=target_width,
-                    tolerance=tolerance,
-                    epsilon=epsilon,
-                    reject_status=reject_status,
-                )
-            else:
+            if best_rect is not None:
                 self._track_hits += 1
-        else:
-            best_rect = detect_rect(
-                edges,
-                gray,
-                min_area,
-                white_area,
-                real_aspect_ratio,
-                target_width=target_width,
-                tolerance=tolerance,
-                epsilon=epsilon,
-                reject_status=reject_status,
+                self._update_center(best_rect)
+                return best_rect
+
+        # ── 2. 内部 ROI 追踪 ──
+        if not is_full_search and self._last_center is not None:
+            best_rect = self._track_roi(
+                edges, gray, min_area, white_area, real_aspect_ratio,
+                target_width=target_width, tolerance=tolerance,
+                epsilon=epsilon, reject_status=reject_status,
             )
-            self._full_searches += 1
+            if best_rect is not None:
+                self._track_hits += 1
+                self._update_center(best_rect)
+                return best_rect
+
+        # ── 3. 全图搜索
+        best_rect = detect_rect(
+            edges, gray, min_area, white_area, real_aspect_ratio,
+            target_width=target_width, tolerance=tolerance, epsilon=epsilon,
+            reject_status=reject_status,
+        )
+        self._full_searches += 1
 
         if best_rect is not None:
-            cx = float(best_rect[:, 0].mean())
-            cy = float(best_rect[:, 1].mean())
-            self._last_center = (cx, cy)
-            if self._smoothed_center is None:
-                self._smoothed_center = (cx, cy)
-            else:
-                scx, scy = self._smoothed_center
-                self._smoothed_center = (
-                    self.smooth_alpha * cx + (1.0 - self.smooth_alpha) * scx,
-                    self.smooth_alpha * cy + (1.0 - self.smooth_alpha) * scy,
-                )
+            self._update_center(best_rect)
         else:
-            self._misses += 1
-            if self._misses > 10:
-                self._last_center = None
-                self._smoothed_center = None
-
+            self._handle_miss()
         return best_rect
+
+    # ------------------------------------------------------------------
+    # 公开接口
+    # ------------------------------------------------------------------
 
     def reset(self) -> None:
         self._last_center = None
@@ -602,6 +589,77 @@ class RectTracker:
     @property
     def smoothed_center(self) -> Optional[Tuple[float, float]]:
         return self._smoothed_center
+
+    # ------------------------------------------------------------------
+    # 内部 — 中心更新 / 丢失处理
+    # ------------------------------------------------------------------
+
+    def _update_center(self, corners: MatLike) -> None:
+        cx = float(corners[:, 0].mean())
+        cy = float(corners[:, 1].mean())
+        self._last_center = (cx, cy)
+        if self._smoothed_center is None:
+            self._smoothed_center = (cx, cy)
+        else:
+            scx, scy = self._smoothed_center
+            self._smoothed_center = (
+                self.smooth_alpha * cx + (1.0 - self.smooth_alpha) * scx,
+                self.smooth_alpha * cy + (1.0 - self.smooth_alpha) * scy,
+            )
+
+    def _handle_miss(self) -> None:
+        self._misses += 1
+        if self._misses > 10:
+            self._last_center = None
+            self._smoothed_center = None
+
+    # ------------------------------------------------------------------
+    # 内部 — 基于 bbox 的 geom 检测
+    # ------------------------------------------------------------------
+
+    def _detect_in_bbox(
+        self,
+        edges: MatLike,
+        gray: MatLike,
+        bbox: Tuple[int, int, int, int],
+        min_area: np.uint32,
+        white_area: np.uint32,
+        real_aspect_ratio: float,
+        target_width: Optional[int],
+        tolerance: float,
+        epsilon: float,
+        reject_status: Dict,
+    ) -> Optional[MatLike]:
+        """在指定 bbox (x1, y1, x2, y2) 内运行几何检测，返回全局坐标角点。"""
+        x1, y1, x2, y2 = bbox
+        h, w = edges.shape[:2]
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        roi_edges = edges[y1:y2, x1:x2]
+        roi_gray = gray[y1:y2, x1:x2]
+
+        local_rect = detect_rect(
+            roi_edges, roi_gray,
+            min_area, white_area, real_aspect_ratio,
+            target_width=target_width, tolerance=tolerance,
+            epsilon=epsilon, reject_status=reject_status,
+            num_workers=1,
+        )
+        if local_rect is None:
+            return None
+        local_rect = local_rect.astype(np.int32)
+        local_rect[:, 0] += x1
+        local_rect[:, 1] += y1
+        return local_rect
+
+    # ------------------------------------------------------------------
+    # 内部 — 固定半径 ROI 追踪
+    # ------------------------------------------------------------------
 
     def _track_roi(
         self,
@@ -625,29 +683,9 @@ class RectTracker:
         y1 = max(0, int(ly) - r)
         y2 = min(h, int(ly) + r)
 
-        if x2 <= x1 or y2 <= y1:
-            return None
-
-        roi_edges = edges[y1:y2, x1:x2]
-        roi_gray = gray[y1:y2, x1:x2]
-
-        local_rect = detect_rect(
-            roi_edges,
-            roi_gray,
-            min_area,
-            white_area,
-            real_aspect_ratio,
-            target_width=target_width,
-            tolerance=tolerance,
-            epsilon=epsilon,
-            reject_status=reject_status,
-            num_workers=1,
+        return self._detect_in_bbox(
+            edges, gray, (x1, y1, x2, y2),
+            min_area, white_area, real_aspect_ratio,
+            target_width=target_width, tolerance=tolerance,
+            epsilon=epsilon, reject_status=reject_status,
         )
-
-        if local_rect is None:
-            return None
-
-        local_rect = local_rect.astype(np.int32)
-        local_rect[:, 0] += x1
-        local_rect[:, 1] += y1
-        return local_rect

@@ -1,10 +1,15 @@
 """相机捕获 + 矩形追踪 + 激光点追踪 — Web 推流版。"""
 
+import os
+import time
+
+# 必须在 import cv2 之前设置，避免 Qt wayland 插件缺失的警告
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+
 import cv2
 import numpy as np
 
 from tools._threshold import Binarizer
-from tools.hardware_pipeline import JetsonCamera, PipelineConfig
 from tools.tools import (
     DrawGraph,
     FpsShow,
@@ -13,7 +18,7 @@ from tools.tools import (
     cvt_mvlab2cv,
     preprocess,
 )
-from tools.web import DebugServer
+
 
 # ============================================================================
 # 参数
@@ -30,67 +35,69 @@ KERNEL_SIZE = 5
 # ============================================================================
 # 初始化
 # ============================================================================
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
+MAX_READ_FAILURES = 30
+RECONNECT_DELAY = 2.0  # 重连前等待秒数
 
-config = PipelineConfig(
-    source="usb",
-    device="/dev/video0",
-    width=640,
-    height=480,
-    fps=120,
-    flip_method=6,
-)
-camera = JetsonCamera(config)
-if not camera.open():
-    raise RuntimeError(f"无法打开相机：{camera.last_error}")
+camera = cv2.VideoCapture(CAMERA_INDEX)
+if not camera.isOpened():
+    raise RuntimeError(f"无法打开相机 /dev/video{CAMERA_INDEX}")
 fps = FpsShow()
 binarizer = Binarizer(strategy="range")
-rect_tracker = RectTracker(track_radius=250, smooth_alpha=0.6)
+rect_tracker = RectTracker()  # track_radius=400, full_search_interval=10
+laser_detector = LaserSpotDetector(
+    track_radius=120,
+    smooth_alpha=0.65,
+    full_search_interval=30,
+    min_area=5,
+    max_area=1000,
+    morph_kernel_size=3,
+    roi_margin=4,
+    max_aspect_ratio=3.0,
+    min_confidence=0.25,
+    color_mode="blue",
+    min_color_excess=40,
+    min_color_value=80,
+    threshold=[99, 100, -32, 28, -38, 26],
+)
 
-# laser_detector = LaserSpotDetector(
-#     track_radius=120,
-#     smooth_alpha=0.65,
-#     full_search_interval=30,
-#     min_area=5,
-#     max_area=1000,
-#     morph_kernel_size=3,
-#     roi_margin=4,
-#     max_aspect_ratio=3.0,
-#     min_confidence=0.25,
-#     color_mode="blue",
-#     min_color_excess=40,
-#     min_color_value=80,
-#     threshold=[99, 100, -32, 28, -38, 26],
-# )
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (KERNEL_SIZE, KERNEL_SIZE))
 rect_lab_lower, rect_lab_upper = cvt_mvlab2cv(DEFAULT_LAB_THRESHOLDS)
 
-server = DebugServer(port=8080)
-server.start()
+cv2.namedWindow("main", cv2.WINDOW_NORMAL)
+cv2.namedWindow("edges", cv2.WINDOW_NORMAL)
 best_rect = None
 # ============================================================================
 # 主循环
 # ============================================================================
 
 consecutive_read_failures = 0
-
-camera_error = None
 while True:
     ok, frame = camera.read()
     if not ok or frame is None:
         consecutive_read_failures += 1
-        if consecutive_read_failures >= 30:
-            camera_error = "相机连续读取失败 30 次"
-            break
+        if consecutive_read_failures >= MAX_READ_FAILURES:
+            print(f"[warn] 相机连续读取失败 {MAX_READ_FAILURES} 次，尝试重连 /dev/video{CAMERA_INDEX} ...")
+            camera.release()
+            time.sleep(RECONNECT_DELAY)
+            camera = cv2.VideoCapture(CAMERA_INDEX)
+            consecutive_read_failures = 0
+            # 重连后重置追踪状态
+            best_rect = None
         continue
     consecutive_read_failures = 0
-    # 如果矩形没有找到，那就进行全图学习
-    if best_rect is not None:
+    # 如果矩形没有找到，在图片中心取 ROI 学习阈值
+    if best_rect is None:
+        h, w = frame.shape[:2]
+        roi_size = min(w, h) // 3
+        roi_x = max(0, w // 2 - roi_size // 2)
+        roi_y = max(0, h // 2 - roi_size // 2)
         binarizer.learn(
             frame=frame,
-            roi_x=0,
-            roi_y=0,
-            roi_w=cv2.get(cv2.CAP_PROP_FRAME_WIDGH),
-            roi_h=cv2.get(cv2.CAP_PROP_FRAME_HEIGHT),
+            roi_x=roi_x,
+            roi_y=roi_y,
+            roi_w=roi_size,
+            roi_h=roi_size,
         )
     if binarizer.is_learned:
         param = binarizer.params
@@ -128,9 +135,9 @@ while True:
     #     if best_rect is not None
     #     else None
     # )
-    # if graph is not None:
-    #     graph.draw_border(frame)
-    #     graph.draw_corners(frame)
+    if graph is not None:
+        graph.draw_border(frame)
+        graph.draw_corners(frame)
     #
     # if spot is not None:
     #     if graph is not None:
@@ -152,13 +159,14 @@ while True:
         (0, 255, 0),
     )
 
-    # ── 推流 ──
-    fps.show(frame)
-    server.update_frame(0, frame)
+    # ── FPS 标注 + 窗口显示 ──
+    frame = fps.show(frame)
+    cv2.imshow("main", frame)
+    cv2.imshow("edges", rect_edges)
 
-    server.update_frame(1, rect_edges)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
+        break
 camera.release()
-server.stop()
+
 cv2.destroyAllWindows()
-if camera_error is not None:
-    raise RuntimeError(camera_error)
