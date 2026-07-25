@@ -1,15 +1,15 @@
 # YOLO 训练配置
 # 所有字段均为 Ultralytics model.train() 参数
 
-data: yolo/data.yaml          # 数据集配置（split_dataset.py 生成）
-model: yolov11n.pt            # COCO 预训练权重（首次运行自动下载）
-epochs: 100                   # 训练轮数
-batch: 16                     # RTX 5060 16GB VRAM 建议 16；OOM 则调为 8
-imgsz: 640                    # 输入尺寸
+data: yolo/data.yaml # 数据集配置（split_dataset.py 生成）
+model: yolo11n.pt # COCO 预训练权重（首次运行自动下载）
+epochs: 100 # 训练轮数
+batch: 16 # RTX 5060 16GB VRAM 建议 16；OOM 则调为 8
+imgsz: 640 # 输入尺寸
 
 # 以下使用 Ultralytics 默认值，按需取消注释覆盖：
-# lr0: 0.01                   # 初始学习率
-# weight_decay: 0.0005
-# patience: 50                # early stopping
-# device: 0                   # GPU 设备号
-# workers: 8                  # DataLoader 进程数
+lr0: 0.01 # 初始学习率
+weight_decay: 0.0005
+patience: 50 # early stopping
+device: 0 # GPU 设备号
+workers: 12 # DataLoader 进程数

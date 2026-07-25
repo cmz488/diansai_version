@@ -11,6 +11,7 @@ train/val/test 三个子集，并生成 Ultralytics 格式的 data.yaml。
 import argparse
 import random
 import shutil
+import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -61,6 +62,87 @@ def _find_class_names(raw: Path) -> dict[int, str]:
             lines = [line.strip() for line in fpath.read_text().strip().splitlines() if line.strip()]
             return {i: name for i, name in enumerate(lines)}
     return {}
+
+
+def convert_voc_to_yolo(raw: Path) -> None:
+    """将 PascalVOC XML 标注转换为 YOLO TXT，保留 XML 原件。"""
+    lbl_dir = raw / "labels"
+    xml_paths = sorted(lbl_dir.glob("*.xml"))
+    if not xml_paths:
+        return
+
+    class_names = _find_class_names(raw)
+    existing_yolo = list(lbl_dir.glob("*.txt"))
+    if existing_yolo and not class_names:
+        raise ValueError(
+            "检测到 XML/TXT 混合标注，但缺少 classes.txt，无法安全确定类别编号"
+        )
+
+    xml_classes: set[str] = set()
+    for xml_path in xml_paths:
+        root = ET.parse(xml_path).getroot()
+        for obj in root.findall("object"):
+            name = (obj.findtext("name") or "").strip()
+            if not name:
+                raise ValueError(f"标注类别名为空: {xml_path}")
+            xml_classes.add(name)
+
+    ordered_names = [class_names[i] for i in sorted(class_names)]
+    ordered_names.extend(sorted(xml_classes - set(ordered_names)))
+    name_to_id = {name: i for i, name in enumerate(ordered_names)}
+
+    converted = 0
+    skipped = 0
+    for xml_path in xml_paths:
+        txt_path = xml_path.with_suffix(".txt")
+        if txt_path.exists():
+            skipped += 1
+            continue
+
+        root = ET.parse(xml_path).getroot()
+        size = root.find("size")
+        if size is None:
+            raise ValueError(f"XML 缺少图片尺寸: {xml_path}")
+        width = int(size.findtext("width", "0"))
+        height = int(size.findtext("height", "0"))
+        if width <= 0 or height <= 0:
+            raise ValueError(f"XML 图片尺寸无效: {xml_path}")
+
+        lines: list[str] = []
+        for obj in root.findall("object"):
+            name = (obj.findtext("name") or "").strip()
+            box = obj.find("bndbox")
+            if box is None:
+                raise ValueError(f"对象缺少 bndbox: {xml_path}")
+
+            xmin = float(box.findtext("xmin", "nan"))
+            ymin = float(box.findtext("ymin", "nan"))
+            xmax = float(box.findtext("xmax", "nan"))
+            ymax = float(box.findtext("ymax", "nan"))
+            if not (0 <= xmin < xmax <= width and 0 <= ymin < ymax <= height):
+                raise ValueError(
+                    f"标注框越界或尺寸无效: {xml_path} "
+                    f"({xmin}, {ymin}, {xmax}, {ymax}) / ({width}, {height})"
+                )
+
+            x_center = (xmin + xmax) / (2 * width)
+            y_center = (ymin + ymax) / (2 * height)
+            box_width = (xmax - xmin) / width
+            box_height = (ymax - ymin) / height
+            lines.append(
+                f"{name_to_id[name]} {x_center:.6f} {y_center:.6f} "
+                f"{box_width:.6f} {box_height:.6f}"
+            )
+
+        txt_path.write_text("\n".join(lines) + ("\n" if lines else ""))
+        converted += 1
+
+    classes_path = raw / "classes.txt"
+    classes_path.write_text("\n".join(ordered_names) + "\n")
+    print(
+        f"[convert] PascalVOC → YOLO: {converted} 个文件已转换，"
+        f"{skipped} 个已有 TXT 已跳过；类别={ordered_names}"
+    )
 
 
 def validate(raw: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
@@ -219,21 +301,24 @@ def main() -> None:
     raw = Path(args.raw).resolve()
     out = Path(args.out).resolve()
 
-    # 1. 查找类名
+    # 1. 自动转换 LabelImg 默认生成的 PascalVOC XML 标注
+    convert_voc_to_yolo(raw)
+
+    # 2. 查找类名
     class_names = _find_class_names(raw)
 
-    # 2. 校验 + 统计
+    # 3. 校验 + 统计
     pairs, class_counts, stem_to_ext = validate(raw)
 
     if not pairs:
         print("\n[error] 没有找到任何有效配对，无法拆分。")
         raise SystemExit(1)
 
-    # 3. 拆分 + 复制 + 生成 data.yaml
+    # 4. 拆分 + 复制 + 生成 data.yaml
     print(f"\n  拆分比例: {args.ratio}  (seed={args.seed})")
     split_and_copy(pairs, stem_to_ext, raw, out, args.ratio, args.seed, class_names)
 
-    # 4. 最终汇总
+    # 5. 最终汇总
     print(f"\n  拆分完成！输出目录: {out}")
     print(f"  下一步: 编辑 {out}/data.yaml 确认类别名，然后 python yolo/train.py")
 
