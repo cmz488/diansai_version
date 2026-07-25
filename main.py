@@ -15,6 +15,14 @@ from tools.tools import (
 )
 from tools.web import DebugServer
 
+# ── YOLO 检测（可选）──
+USE_YOLO = False  # 改为 True 启用 YOLO 替代 RectTracker
+YOLO_ENGINE = "models/yolov11n_best.engine"  # TensorRT engine 路径
+YOLO_PT = "models/yolov11n_best.pt"          # PyTorch fallback 路径
+YOLO_CONF = 0.5                               # 置信度阈值
+if USE_YOLO:
+    from tools.yolo_detector import YoloDetector
+
 # ============================================================================
 # 参数
 # ============================================================================
@@ -26,6 +34,18 @@ DEFAULT_LAB_THRESHOLDS = [12, 100, -53, 7, -38, 31]
 MIN_AREA = 2000
 MIN_WHITE = 10
 KERNEL_SIZE = 5
+
+# ============================================================================
+# YOLO 初始化（可选）
+# ============================================================================
+
+yolo_detector = None
+if USE_YOLO:
+    yolo_detector = YoloDetector(
+        engine_path=YOLO_ENGINE,
+        pt_path=YOLO_PT,
+        conf=YOLO_CONF,
+    )
 
 # ============================================================================
 # 初始化
@@ -97,19 +117,32 @@ while True:
         rect_lab_lower = param["lower"]
         rect_lab_upper = param["upper"]
 
-    rect_edges, gray = preprocess(frame, kernel, (rect_lab_lower, rect_lab_upper))
+    if yolo_detector is not None:
+        # ── YOLO 检测 ──
+        bbox = yolo_detector.detect_single(frame)
+        if bbox is not None:
+            x1, y1, x2, y2, conf, cls_id = bbox
+            best_rect = np.array([
+                [x1, y1], [x2, y1], [x2, y2], [x1, y2]
+            ], dtype=np.float32)
+            reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
+        else:
+            best_rect = None
+            reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
+    else:
+        rect_edges, gray = preprocess(frame, kernel, (rect_lab_lower, rect_lab_upper))
 
-    # ── 矩形追踪 ──
-    reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
-    best_rect = rect_tracker.track(
-        rect_edges,
-        gray,
-        MIN_AREA,
-        MIN_WHITE,
-        REAL_ASPECT_RATIO,
-        tolerance=ASPECT_TOLERANCE,
-        reject_status=reject_status,
-    )
+        # ── 矩形追踪 ──
+        reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
+        best_rect = rect_tracker.track(
+            rect_edges,
+            gray,
+            MIN_AREA,
+            MIN_WHITE,
+            REAL_ASPECT_RATIO,
+            tolerance=ASPECT_TOLERANCE,
+            reject_status=reject_status,
+        )
 
     graph = None
     if best_rect is not None:
@@ -156,7 +189,8 @@ while True:
     fps.show(frame)
     server.update_frame(0, frame)
 
-    server.update_frame(1, rect_edges)
+    if yolo_detector is None:
+        server.update_frame(1, rect_edges)
 camera.release()
 server.stop()
 cv2.destroyAllWindows()
