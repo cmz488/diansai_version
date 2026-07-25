@@ -1,0 +1,13 @@
+channels:
+  - defaults
+default_channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r
+custom_channels:
+  conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+  pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+show_channel_urls: true
+pkgs_dirs:
+  - /home/cmz488/Projects/python_file/diansai_version/.conda_pkgs
+envs_dirs:
+  - /home/cmz488/Projects/python_file/diansai_version/.conda_envs

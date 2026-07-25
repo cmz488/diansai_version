@@ -17,3 +17,4 @@ wheels/
 .conda_home/
 .git-repos/
 miniforge_install.sh
+/.conda_pkgs/

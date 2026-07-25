@@ -17,10 +17,14 @@
 | 项目 | 要求 |
 |------|------|
 | OS | Linux (Ubuntu 22.04+ 或等效) |
-| GPU | RTX 5060 (Blackwell, SM 12.x) |
-| NVIDIA 驱动 | ≥ 550（支持 CUDA 12.4+） |
-| CUDA Toolkit | 12.4 或 12.6（由 conda 环境内的 cudatoolkit 提供亦可） |
+| GPU | RTX 5060（Blackwell，计算能力 12.0 / `sm_120`） |
+| NVIDIA 驱动 | ≥ 580.65.06（CUDA 13.0 的 Linux 最低驱动版本） |
+| CUDA 运行库 | PyTorch 2.13.0 官方 `cu130` wheel 自带；无需在 Conda 中安装 CUDA Toolkit |
 | conda | Miniconda3 或 miniforge，未安装则先装 |
+
+系统 CUDA Toolkit 仅在编译自定义 CUDA 扩展时需要。本项目没有自定义 CUDA
+扩展，不要在 Conda dependencies 中额外声明 `pytorch-cuda`、`cudatoolkit` 或
+`cuda-toolkit`，以免与 PyTorch wheel 自动安装的 CUDA 13.0 Pip 运行库混用。
 
 ### 推理端（Jetson Orin NX / AllSpark2）
 
@@ -89,17 +93,19 @@ bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
 eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
 conda init
 
-# 2. 进入 yolo 子模块并创建环境
+# 2. 进入项目并初始化 yolo 子模块
 cd diansai_version
 git submodule update --init yolo
-conda env create -f yolo/environment.yml
 
-# 3. 激活环境
+# 3. 干净重建环境（若 yolo 已存在，脚本会先删除旧环境）
+bash yolo/setup_env.sh
+
+# 4. 激活环境
 conda activate yolo
 
-# 4. 验证 GPU 可用
-python -c "import torch; print(torch.cuda.is_available())"
-# 应输出 True
+# 5. 再次查看关键 GPU 信息
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list(), torch.cuda.get_device_name(0))"
+# 应包含：2.13.0+cu130、13.0、sm_120、NVIDIA GeForce RTX 5060
 ```
 
 ### 步骤 1：收集并标注图片
@@ -234,25 +240,25 @@ for bbox in detector.detect(frame):
 ```yaml
 name: yolo
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
-  - defaults
 dependencies:
-  - python=3.10
-  - pytorch>=2.4
-  - torchvision
-  - pytorch-cuda=12.4
+  - python=3.10.20
   - pip
   - pip:
-      - ultralytics
-      - onnx
-      - onnxruntime-gpu
-      - opencv-python>=5.0
-      - labelImg
+      - --index-url https://download.pytorch.org/whl/cu130
+      - --extra-index-url https://pypi.org/simple
+      - torch==2.13.0+cu130
+      - torchvision==0.28.0+cu130
+      - ultralytics==8.4.105
+      - onnx==1.22.0
+      - onnxruntime==1.23.2
+      - opencv-python==5.0.0.93
+      - labelImg==1.8.6
 ```
 
-> RTX 5060 (Blackwell) 需 PyTorch ≥ 2.4 + CUDA 12.4。`pytorch-cuda=12.4` 由 conda 的 pytorch channel 提供。
+> RTX 5060 的计算能力是 12.0。PyTorch 2.13.0 的 Linux x86_64 `cu130`
+> wheel 原生包含 `sm_120`。Conda 负责 Python 环境，PyTorch 及其 CUDA 运行库
+> 由官方 pip wheel 提供。
 
 ### `scripts/split_dataset.py`
 

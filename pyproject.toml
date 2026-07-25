@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "onnxruntime==1.23.0",
     "opencv-python>=5.0.0.93",
     "python-periphery>=2.4.1",
 ]
