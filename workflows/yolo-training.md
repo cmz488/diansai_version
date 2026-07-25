@@ -33,27 +33,32 @@
 
 ## 目录结构
 
+> **注意**：`yolo/` 是独立的 git submodule，训练框架不进入主项目 git。
+> 首次克隆主项目后需 `git submodule update --init yolo` 拉取训练代码。
+
 训练服务器上，在项目根目录下：
 
 ```text
 diansai_version/
-├── yolo/                          # YOLO 训练根目录
+├── yolo/                          # YOLO 训练框架（git submodule）
 │   ├── data.yaml                  # 数据集配置（由 split_dataset.py 生成）
-│   ├── train_config.yaml          # 训练参数（手动创建，版本受控）
+│   ├── train_config.yaml          # 训练参数
 │   ├── train.py                   # 训练入口脚本
-│   ├── raw/                       # 原始标注数据（用户放入）
+│   ├── environment.yml            # conda 环境定义
+│   ├── split_dataset.py           # 数据集拆分 + 校验 + 报告
+│   ├── raw/                       # 原始标注数据（不提交）
 │   │   ├── images/                #   *.jpg / *.png
 │   │   └── labels/                #   *.txt（LabelImg YOLO 格式）
-│   ├── train/
+│   ├── train/                     # 训练集（不提交）
 │   │   ├── images/
 │   │   └── labels/
-│   ├── val/
+│   ├── val/                       # 验证集（不提交）
 │   │   ├── images/
 │   │   └── labels/
-│   ├── test/
+│   ├── test/                      # 测试集（不提交）
 │   │   ├── images/
 │   │   └── labels/
-│   └── runs/                      # Ultralytics 训练产出
+│   └── runs/                      # Ultralytics 训练产出（不提交）
 │       └── train/
 │           └── exp{N}/
 │               ├── weights/
@@ -62,13 +67,13 @@ diansai_version/
 │               ├── results.csv
 │               └── ...
 ├── scripts/
-│   ├── split_dataset.py           # 数据集拆分 + 校验 + 报告
 │   └── export_tensorrt.sh         # Jetson 端 ONNX → TensorRT
 ├── tools/
 │   └── yolo_detector.py           # 推理接口类
 ├── models/                        # Jetson 端推理用模型
 │   └── yolov11n_best.engine       # TensorRT 引擎（Jetson 上生成）
-└── environment.yml                # conda 环境定义（训练端）
+└── workflows/
+    └── yolo-training.md           # 本文档
 ```
 
 ---
@@ -84,9 +89,10 @@ bash Miniconda3-latest-Linux-x86_64.sh -b -p $HOME/miniconda3
 eval "$($HOME/miniconda3/bin/conda shell.bash hook)"
 conda init
 
-# 2. 从 environment.yml 创建环境
+# 2. 进入 yolo 子模块并创建环境
 cd diansai_version
-conda env create -f environment.yml
+git submodule update --init yolo
+conda env create -f yolo/environment.yml
 
 # 3. 激活环境
 conda activate yolo
@@ -114,7 +120,7 @@ python -c "import torch; print(torch.cuda.is_available())"
 
 ```bash
 conda activate yolo
-python scripts/split_dataset.py --raw yolo/raw --out yolo --ratio 7:2:1
+python yolo/split_dataset.py --raw yolo/raw --out yolo --ratio 7:2:1
 ```
 
 脚本行为：
@@ -216,8 +222,8 @@ for bbox in detector.detect(frame):
 
 | 文件 | 用途 | 在哪台机器 |
 |------|------|-----------|
-| `environment.yml` | conda 环境定义（PyTorch + Ultralytics） | 训练服务器 |
-| `scripts/split_dataset.py` | 数据集拆分/校验/统计 | 训练服务器（纯 Python，无 GPU 依赖） |
+| `yolo/environment.yml` | conda 环境定义（PyTorch + Ultralytics） | 训练服务器 |
+| `yolo/split_dataset.py` | 数据集拆分/校验/统计 | 训练服务器（纯 Python，无 GPU 依赖） |
 | `yolo/train_config.yaml` | 训练超参数 | 训练服务器 |
 | `yolo/train.py` | 训练入口脚本 | 训练服务器 |
 | `scripts/export_tensorrt.sh` | ONNX → TensorRT 转换 | Jetson |

@@ -11,3 +11,9 @@ wheels/
 
 # Worktrees
 .worktrees/
+
+# Local dev tools (training server only)
+.miniforge/
+.conda_home/
+.git-repos/
+miniforge_install.sh
