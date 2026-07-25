@@ -1,0 +1,17 @@
+name: yolo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10.20
+  - pip
+  - pip:
+      # PyTorch 官方 CUDA 13.0 wheel；PyPI 提供其余依赖。
+      - --index-url https://download.pytorch.org/whl/cu130
+      - --extra-index-url https://pypi.org/simple
+      - torch==2.13.0+cu130
+      - torchvision==0.28.0+cu130
+      - ultralytics==8.4.105
+      - onnx==1.22.0
+      - onnxruntime==1.23.2
+      - opencv-python==5.0.0.93
+      - labelImg==1.8.6

@@ -1,0 +1,6 @@
+# 数据与训练产出 — 不提交
+raw/
+train/
+val/
+test/
+runs/
