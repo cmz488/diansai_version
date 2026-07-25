@@ -66,21 +66,21 @@ fps = FpsShow()
 binarizer = Binarizer(strategy="range")
 rect_tracker = RectTracker(track_radius=250, smooth_alpha=0.6)
 
-# laser_detector = LaserSpotDetector(
-#     track_radius=120,
-#     smooth_alpha=0.65,
-#     full_search_interval=30,
-#     min_area=5,
-#     max_area=1000,
-#     morph_kernel_size=3,
-#     roi_margin=4,
-#     max_aspect_ratio=3.0,
-#     min_confidence=0.25,
-#     color_mode="blue",
-#     min_color_excess=40,
-#     min_color_value=80,
-#     threshold=[99, 100, -32, 28, -38, 26],
-# )
+laser_detector = LaserSpotDetector(
+    track_radius=120,
+    smooth_alpha=0.65,
+    full_search_interval=30,
+    min_area=5,
+    max_area=1000,
+    morph_kernel_size=3,
+    roi_margin=4,
+    max_aspect_ratio=3.0,
+    min_confidence=0.25,
+    color_mode="blue",
+    min_color_excess=40,
+    min_color_value=80,
+    threshold=[99, 100, -32, 28, -38, 26],
+)
 kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (KERNEL_SIZE, KERNEL_SIZE))
 rect_lab_lower, rect_lab_upper = cvt_mvlab2cv(DEFAULT_LAB_THRESHOLDS)
 
@@ -109,26 +109,28 @@ while True:
             frame=frame,
             roi_x=0,
             roi_y=0,
-            roi_w=cv2.get(cv2.CAP_PROP_FRAME_WIDGH),
-            roi_h=cv2.get(cv2.CAP_PROP_FRAME_HEIGHT),
+            roi_w=frame.shape[1],
+            roi_h=frame.shape[0],
         )
     if binarizer.is_learned:
         param = binarizer.params
         rect_lab_lower = param["lower"]
         rect_lab_upper = param["upper"]
 
+    rect_edges = None  # 仅在 RectTracker 模式下有效
+    boxes = []          # 仅在 YOLO 模式下有效
     if yolo_detector is not None:
-        # ── YOLO 检测 ──
-        bbox = yolo_detector.detect_single(frame)
-        if bbox is not None:
-            x1, y1, x2, y2, conf, cls_id = bbox
+        # ── YOLO 检测（多目标）──
+        boxes = yolo_detector.detect(frame)
+        if boxes:
+            # 取最高置信度框作为主 best_rect（其余框留给 laser_detector）
+            x1, y1, x2, y2, conf, cls_id = boxes[0]
             best_rect = np.array([
                 [x1, y1], [x2, y1], [x2, y2], [x1, y2]
             ], dtype=np.float32)
-            reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
         else:
             best_rect = None
-            reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
+        reject_status = {"area": 0, "quad": 0, "white_region": 0, "aspect_ratio": 0}
     else:
         rect_edges, gray = preprocess(frame, kernel, (rect_lab_lower, rect_lab_upper))
 
@@ -155,26 +157,45 @@ while True:
 
         graph = DrawGraph(best_rect.astype(np.float32), plane_w, plane_h)
 
-    # # ── 激光点追踪 ──
-    # spot = (
-    #     laser_detector.detect(frame, search_polygon=best_rect)
-    #     if best_rect is not None
-    #     else None
-    # )
-    # if graph is not None:
-    #     graph.draw_border(frame)
-    #     graph.draw_corners(frame)
-    #
-    # if spot is not None:
-    #     if graph is not None:
-    #         laser_pt = np.array([[spot.x, spot.y]], dtype=np.float32)
-    #         plane_pt = graph.map_from_image(laser_pt)[0]
-    #         u = plane_pt[0] / max(graph.plane_w - 1, 1)
-    #         v = plane_pt[1] / max(graph.plane_h - 1, 1)
-    #         if 0 <= u <= 1 and 0 <= v <= 1:
-    #             graph.draw_point(frame, u, v)
-    #             graph.draw_cross(frame, u, v)
-    #             graph.draw_label(frame, u, v, f"conf:{spot.confidence:.2f}")
+    if graph is not None:
+        graph.draw_border(frame)
+        graph.draw_corners(frame)
+
+    # ── 激光点追踪 ──
+    if yolo_detector is not None and boxes:
+        # YOLO 模式：对每个检测框做激光点检测
+        for i, bbox in enumerate(boxes):
+            x1, y1, x2, y2 = bbox.x1, bbox.y1, bbox.x2, bbox.y2
+            search_poly = np.array([
+                [x1, y1], [x2, y1], [x2, y2], [x1, y2]
+            ], dtype=np.float32)
+            spot = laser_detector.detect(frame, search_polygon=search_poly)
+            if spot is not None and graph is not None and i == 0:
+                # 仅为主框（最高置信度）做 Web 界面显示
+                laser_pt = np.array([[spot.x, spot.y]], dtype=np.float32)
+                plane_pt = graph.map_from_image(laser_pt)[0]
+                u = plane_pt[0] / max(graph.plane_w - 1, 1)
+                v = plane_pt[1] / max(graph.plane_h - 1, 1)
+                if 0 <= u <= 1 and 0 <= v <= 1:
+                    graph.draw_point(frame, u, v)
+                    graph.draw_cross(frame, u, v)
+                    graph.draw_label(frame, u, v, f"conf:{spot.confidence:.2f}")
+    elif yolo_detector is None:
+        # RectTracker 模式：对 best_rect 做激光点检测
+        spot = (
+            laser_detector.detect(frame, search_polygon=best_rect)
+            if best_rect is not None
+            else None
+        )
+        if spot is not None and graph is not None:
+            laser_pt = np.array([[spot.x, spot.y]], dtype=np.float32)
+            plane_pt = graph.map_from_image(laser_pt)[0]
+            u = plane_pt[0] / max(graph.plane_w - 1, 1)
+            v = plane_pt[1] / max(graph.plane_h - 1, 1)
+            if 0 <= u <= 1 and 0 <= v <= 1:
+                graph.draw_point(frame, u, v)
+                graph.draw_cross(frame, u, v)
+                graph.draw_label(frame, u, v, f"conf:{spot.confidence:.2f}")
 
     cv2.putText(
         frame,
@@ -189,7 +210,7 @@ while True:
     fps.show(frame)
     server.update_frame(0, frame)
 
-    if yolo_detector is None:
+    if rect_edges is not None:
         server.update_frame(1, rect_edges)
 camera.release()
 server.stop()

@@ -39,6 +39,15 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def _print_preview(label: str, items: list[str], limit: int = 8) -> None:
+    """打印标签 + 数量 + 预览（前 N 项）。"""
+    print(f"  {label}: {len(items)}")
+    if items:
+        preview = ", ".join(items[:limit])
+        suffix = " ..." if len(items) > limit else ""
+        print(f"    → {preview}{suffix}")
+
+
 def _find_class_names(raw: Path) -> dict[int, str]:
     """从多个可能位置查找类名文件，返回 {class_id: name} 映射。"""
     candidates = [
@@ -54,8 +63,12 @@ def _find_class_names(raw: Path) -> dict[int, str]:
     return {}
 
 
-def validate(raw: Path) -> tuple[list[str], dict[str, int]]:
-    """校验图片与标注配对，返回 (有效配对 stem 列表, 各类别框数)。"""
+def validate(raw: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
+    """校验图片与标注配对。
+
+    Returns:
+        (有效配对 stem 列表, 各类别框数, stem→扩展名映射)。
+    """
     img_dir = raw / "images"
     lbl_dir = raw / "labels"
 
@@ -99,21 +112,9 @@ def validate(raw: Path) -> tuple[list[str], dict[str, int]]:
     print(f"  图片文件数:         {len(img_stems)}")
     print(f"  标注文件数:         {len(lbl_stems)}")
     print(f"  有效配对:           {len(pairs)}")
-    print(f"  缺标注的图片:       {len(missing_labels)}")
-    if missing_labels:
-        preview = ", ".join(missing_labels[:8])
-        suffix = " ..." if len(missing_labels) > 8 else ""
-        print(f"    → {preview}{suffix}")
-    print(f"  缺图片的标注:       {len(missing_images)}")
-    if missing_images:
-        preview = ", ".join(missing_images[:8])
-        suffix = " ..." if len(missing_images) > 8 else ""
-        print(f"    → {preview}{suffix}")
-    print(f"  空标注（无框）:     {len(empty_labels)}")
-    if empty_labels:
-        preview = ", ".join(empty_labels[:8])
-        suffix = " ..." if len(empty_labels) > 8 else ""
-        print(f"    → {preview}{suffix}")
+    _print_preview("缺标注的图片", missing_labels)
+    _print_preview("缺图片的标注", missing_images)
+    _print_preview("空标注（无框）", empty_labels)
 
     if class_counts:
         print(f"\n  类别框数统计:")
@@ -123,7 +124,7 @@ def validate(raw: Path) -> tuple[list[str], dict[str, int]]:
         print(f"\n  [warn] 没有检测到任何标注框")
 
     print("=" * 55)
-    return pairs, dict(class_counts)
+    return pairs, dict(class_counts), stem_to_ext
 
 
 def split_and_copy(
@@ -222,24 +223,17 @@ def main() -> None:
     class_names = _find_class_names(raw)
 
     # 2. 校验 + 统计
-    pairs, class_counts = validate(raw)
+    pairs, class_counts, stem_to_ext = validate(raw)
 
     if not pairs:
         print("\n[error] 没有找到任何有效配对，无法拆分。")
         raise SystemExit(1)
 
-    # 3. 收集 stem→ext 映射（用于复制时找到正确的扩展名）
-    img_dir = raw / "images"
-    stem_to_ext: dict[str, str] = {}
-    for f in img_dir.iterdir():
-        if f.suffix.lower() in IMG_EXTS:
-            stem_to_ext[f.stem] = f.suffix
-
-    # 4. 拆分 + 复制 + 生成 data.yaml
+    # 3. 拆分 + 复制 + 生成 data.yaml
     print(f"\n  拆分比例: {args.ratio}  (seed={args.seed})")
     split_and_copy(pairs, stem_to_ext, raw, out, args.ratio, args.seed, class_names)
 
-    # 5. 最终汇总
+    # 4. 最终汇总
     print(f"\n  拆分完成！输出目录: {out}")
     print(f"  下一步: 编辑 {out}/data.yaml 确认类别名，然后 python yolo/train.py")
 

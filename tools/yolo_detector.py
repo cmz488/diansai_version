@@ -5,17 +5,29 @@ TensorRT engine 优先加载，fallback 到 PyTorch .pt 文件。
 
 用法:
     detector = YoloDetector(engine_path="models/best.engine", conf=0.5)
-    boxes = detector.detect(frame)  # -> [(x1,y1,x2,y2,conf,cls_id), ...]
+    boxes = detector.detect(frame)  # -> [BBox(x1=..., y1=..., ...), ...]
 """
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import numpy as np
 
-#: BBox 类型: (x1, y1, x2, y2, confidence, class_id) — 像素坐标
-BBox = tuple[int, int, int, int, float, int]
+
+class BBox(NamedTuple):
+    """检测框 — 像素坐标 + 置信度 + 类别 ID。
+
+    字段可通过索引或 .name 访问：
+        x1, y1, x2, y2, conf, cls_id = bbox
+        print(bbox.x1, bbox.conf)
+    """
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    conf: float
+    cls_id: int
 
 
 class YoloDetector:
@@ -43,11 +55,11 @@ class YoloDetector:
 
         # 优先 TensorRT engine
         if engine_path:
-            self._try_load_engine(engine_path)
+            self._try_load(engine_path, "tensorrt")
 
         # Fallback: PyTorch .pt
         if self._model is None and pt_path:
-            self._try_load_pt(pt_path)
+            self._try_load(pt_path, "pytorch")
 
         if self._model is None:
             raise RuntimeError(
@@ -60,30 +72,23 @@ class YoloDetector:
 
     # ── 内部加载 ──
 
-    def _try_load_engine(self, path: str) -> None:
-        from pathlib import Path
-        if not Path(path).exists():
-            print(f"[YoloDetector] engine not found: {path}, "
-                  f"trying PyTorch fallback")
-            return
-        try:
-            from ultralytics import YOLO
-            self._model = YOLO(path, task="detect")
-            self._backend = "tensorrt"
-        except Exception as e:
-            print(f"[YoloDetector] TensorRT load failed: {e}")
+    def _try_load(self, path: str, backend: str) -> None:
+        """尝试加载模型文件。
 
-    def _try_load_pt(self, path: str) -> None:
+        Args:
+            path: 模型文件路径（.engine 或 .pt）。
+            backend: 后端标识（'tensorrt' 或 'pytorch'）。
+        """
         from pathlib import Path
         if not Path(path).exists():
-            print(f"[YoloDetector] PyTorch model not found: {path}")
+            print(f"[YoloDetector] {backend} model not found: {path}")
             return
         try:
             from ultralytics import YOLO
             self._model = YOLO(path, task="detect")
-            self._backend = "pytorch"
+            self._backend = backend
         except Exception as e:
-            print(f"[YoloDetector] PyTorch load failed: {e}")
+            print(f"[YoloDetector] {backend} load failed: {e}")
 
     # ── 推理 ──
 
@@ -94,8 +99,7 @@ class YoloDetector:
             frame: BGR 图像 (H, W, 3)，OpenCV ndarray。
 
         Returns:
-            BBox 列表，每个元素 (x1, y1, x2, y2, confidence, class_id)。
-            按 confidence 降序排列，空列表表示无检测结果。
+            BBox 列表，按 confidence 降序排列，空列表表示无检测结果。
         """
         if self._model is None:
             return []
@@ -110,11 +114,13 @@ class YoloDetector:
                 continue
             for box in r.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                conf_val = float(box.conf[0])
-                cls_id = int(box.cls[0])
-                boxes_out.append((x1, y1, x2, y2, conf_val, cls_id))
+                boxes_out.append(BBox(
+                    x1=x1, y1=y1, x2=x2, y2=y2,
+                    conf=float(box.conf[0]),
+                    cls_id=int(box.cls[0]),
+                ))
 
-        boxes_out.sort(key=lambda b: b[4], reverse=True)
+        boxes_out.sort(key=lambda b: b.conf, reverse=True)
         return boxes_out
 
     def detect_single(self, frame: np.ndarray) -> Optional[BBox]:
@@ -126,8 +132,3 @@ class YoloDetector:
     def backend(self) -> str:
         """当前使用的推理后端: 'tensorrt' / 'pytorch' / 'none'。"""
         return self._backend
-
-    @property
-    def loaded(self) -> bool:
-        """模型是否已成功加载。"""
-        return self._model is not None
