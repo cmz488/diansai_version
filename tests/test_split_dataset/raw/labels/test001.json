@@ -1,0 +1,17 @@
+{
+  "version": "5.0.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "ball",
+      "points": [[100, 200], [500, 600]],
+      "group_id": null,
+      "shape_type": "rectangle",
+      "flags": {}
+    }
+  ],
+  "imagePath": "test001.jpg",
+  "imageData": null,
+  "imageHeight": 1000,
+  "imageWidth": 800
+}

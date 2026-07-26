@@ -9,12 +9,11 @@ train/val/test 三个子集，并生成 Ultralytics 格式的 data.yaml。
 """
 
 import argparse
+import json
 import random
 import shutil
-import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
@@ -64,84 +63,93 @@ def _find_class_names(raw: Path) -> dict[int, str]:
     return {}
 
 
-def convert_voc_to_yolo(raw: Path) -> None:
-    """将 PascalVOC XML 标注转换为 YOLO TXT，保留 XML 原件。"""
+def convert_labelme_to_yolo(raw: Path) -> None:
+    """将 labelme JSON 标注转换为 YOLO TXT。
+
+    仅处理 shape_type == "rectangle" 的标注。
+    非 rectangle 形状跳过并打印 warning。
+    原始 JSON 文件保留不动。
+    """
     lbl_dir = raw / "labels"
-    xml_paths = sorted(lbl_dir.glob("*.xml"))
-    if not xml_paths:
+    json_paths = sorted(lbl_dir.glob("*.json"))
+    if not json_paths:
+        print("[convert] 未发现 labelme JSON 标注文件")
         return
 
     class_names = _find_class_names(raw)
-    existing_yolo = list(lbl_dir.glob("*.txt"))
-    if existing_yolo and not class_names:
-        raise ValueError(
-            "检测到 XML/TXT 混合标注，但缺少 classes.txt，无法安全确定类别编号"
-        )
-
-    xml_classes: set[str] = set()
-    for xml_path in xml_paths:
-        root = ET.parse(xml_path).getroot()
-        for obj in root.findall("object"):
-            name = (obj.findtext("name") or "").strip()
-            if not name:
-                raise ValueError(f"标注类别名为空: {xml_path}")
-            xml_classes.add(name)
-
-    ordered_names = [class_names[i] for i in sorted(class_names)]
-    ordered_names.extend(sorted(xml_classes - set(ordered_names)))
-    name_to_id = {name: i for i, name in enumerate(ordered_names)}
+    if not class_names:
+        raise ValueError("未找到 classes.txt，无法确定类别映射")
+    # 建立 label 字符串 → class_id 的反向映射
+    label_to_id: dict[str, int] = {name: i for i, name in class_names.items()}
 
     converted = 0
     skipped = 0
-    for xml_path in xml_paths:
-        txt_path = xml_path.with_suffix(".txt")
+    warnings: list[str] = []
+
+    for json_path in json_paths:
+        txt_path = json_path.with_suffix(".txt")
         if txt_path.exists():
             skipped += 1
             continue
 
-        root = ET.parse(xml_path).getroot()
-        size = root.find("size")
-        if size is None:
-            raise ValueError(f"XML 缺少图片尺寸: {xml_path}")
-        width = int(size.findtext("width", "0"))
-        height = int(size.findtext("height", "0"))
+        data = json.loads(json_path.read_text())
+        if "imageWidth" not in data or "imageHeight" not in data:
+            raise ValueError(f"JSON 缺少 imageWidth/imageHeight 字段: {json_path}")
+        width = data["imageWidth"]
+        height = data["imageHeight"]
         if width <= 0 or height <= 0:
-            raise ValueError(f"XML 图片尺寸无效: {xml_path}")
+            raise ValueError(f"JSON 图片尺寸无效 ({width}x{height}): {json_path}")
 
         lines: list[str] = []
-        for obj in root.findall("object"):
-            name = (obj.findtext("name") or "").strip()
-            box = obj.find("bndbox")
-            if box is None:
-                raise ValueError(f"对象缺少 bndbox: {xml_path}")
+        for shape in data.get("shapes", []):
+            shape_type = shape.get("shape_type", "")
+            if shape_type != "rectangle":
+                warnings.append(
+                    f"[warn] 跳过非矩形标注: {json_path.name} "
+                    f"shape_type={shape_type}"
+                )
+                continue
 
-            xmin = float(box.findtext("xmin", "nan"))
-            ymin = float(box.findtext("ymin", "nan"))
-            xmax = float(box.findtext("xmax", "nan"))
-            ymax = float(box.findtext("ymax", "nan"))
-            if not (0 <= xmin < xmax <= width and 0 <= ymin < ymax <= height):
+            label = (shape.get("label") or "").strip()
+            if not label:
+                raise ValueError(f"标注 label 为空: {json_path}")
+            if label not in label_to_id:
                 raise ValueError(
-                    f"标注框越界或尺寸无效: {xml_path} "
-                    f"({xmin}, {ymin}, {xmax}, {ymax}) / ({width}, {height})"
+                    f"标注 label '{label}' 不在 classes.txt 中: {json_path}"
                 )
 
-            x_center = (xmin + xmax) / (2 * width)
-            y_center = (ymin + ymax) / (2 * height)
-            box_width = (xmax - xmin) / width
-            box_height = (ymax - ymin) / height
+            points = shape.get("points", [])
+            if len(points) < 2:
+                raise ValueError(f"矩形标注缺少有效顶点: {json_path}")
+            # labelme 矩形顶点的点击顺序可能为任意对角方向，取 min/max
+            x1 = min(p[0] for p in points[:2])
+            y1 = min(p[1] for p in points[:2])
+            x2 = max(p[0] for p in points[:2])
+            y2 = max(p[1] for p in points[:2])
+
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+                raise ValueError(
+                    f"标注框越界或尺寸无效: {json_path} "
+                    f"({x1}, {y1}, {x2}, {y2}) / ({width}, {height})"
+                )
+
+            x_center = (x1 + x2) / (2 * width)
+            y_center = (y1 + y2) / (2 * height)
+            box_width = (x2 - x1) / width
+            box_height = (y2 - y1) / height
             lines.append(
-                f"{name_to_id[name]} {x_center:.6f} {y_center:.6f} "
+                f"{label_to_id[label]} {x_center:.6f} {y_center:.6f} "
                 f"{box_width:.6f} {box_height:.6f}"
             )
 
         txt_path.write_text("\n".join(lines) + ("\n" if lines else ""))
         converted += 1
 
-    classes_path = raw / "classes.txt"
-    classes_path.write_text("\n".join(ordered_names) + "\n")
+    for w in warnings:
+        print(w)
     print(
-        f"[convert] PascalVOC → YOLO: {converted} 个文件已转换，"
-        f"{skipped} 个已有 TXT 已跳过；类别={ordered_names}"
+        f"[convert] labelme JSON → YOLO: {converted} 个文件已转换，"
+        f"{skipped} 个已有 TXT 已跳过"
     )
 
 
@@ -301,8 +309,8 @@ def main() -> None:
     raw = Path(args.raw).resolve()
     out = Path(args.out).resolve()
 
-    # 1. 自动转换 LabelImg 默认生成的 PascalVOC XML 标注
-    convert_voc_to_yolo(raw)
+    # 1. 自动转换 labelme JSON 标注为 YOLO TXT
+    convert_labelme_to_yolo(raw)
 
     # 2. 查找类名
     class_names = _find_class_names(raw)
