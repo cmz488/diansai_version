@@ -21,3 +21,5 @@ miniforge_install.sh
 /runs/
 /yolo/raw/
 /yolo/labels
+tests/test_split_dataset/out/
+tests/test_split_dataset/raw/labels/*.txt

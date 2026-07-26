@@ -37,7 +37,7 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
-def train(cfg: dict) -> Path:
+def tune_and_train(cfg: dict) -> Path:
     """执行超参数搜索 + 训练，返回 best.pt 路径。
 
     model.tune() 会使用 Ultralytics 内置 Tuner 自动搜索最优超参数组合，
@@ -56,10 +56,10 @@ def train(cfg: dict) -> Path:
         epochs=cfg["epochs"],
         batch=cfg["batch"],
         imgsz=cfg["imgsz"],
+        iterations=10,
         patience=cfg.get("patience", 50),
         device=cfg.get("device", 0),
         workers=cfg.get("workers", 8),
-        # iterations、搜索空间等使用 Ultralytics 默认值
     )
 
     # tune 后最优模型在 runs/detect/tune{N}/weights/best.pt
@@ -114,7 +114,7 @@ def main() -> None:
 
     cfg = load_config(config_path)
 
-    best_pt = train(cfg)
+    best_pt = tune_and_train(cfg)
     export_onnx(best_pt, imgsz=cfg["imgsz"])
 
     print("\n[ok] 训练 + ONNX 导出完成")
